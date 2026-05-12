@@ -37,7 +37,7 @@ pub enum BgEvent {
 }
 
 /// Add-config dialog inputs.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SourceKind {
     Local,
     Remote,

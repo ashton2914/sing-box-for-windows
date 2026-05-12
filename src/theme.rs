@@ -30,6 +30,8 @@ pub mod color {
     pub const ON_SECONDARY_CONTAINER: Color32 = Color32::from_rgb(232, 222, 248);
 
     pub const TERTIARY: Color32 = Color32::from_rgb(239, 184, 200);
+    pub const TERTIARY_CONTAINER: Color32 = Color32::from_rgb(99, 59, 72);
+    pub const ON_TERTIARY_CONTAINER: Color32 = Color32::from_rgb(255, 217, 226);
 
     pub const ERROR: Color32 = Color32::from_rgb(242, 184, 181);
     pub const ON_ERROR: Color32 = Color32::from_rgb(96, 20, 16);
@@ -164,7 +166,7 @@ pub fn apply(ctx: &egui::Context) {
 // -------------------------------------------------------------------------
 // Helpers for painting state layers (M3's translucent overlays).
 // -------------------------------------------------------------------------
-fn with_alpha(c: Color32, alpha: f32) -> Color32 {
+pub fn with_alpha(c: Color32, alpha: f32) -> Color32 {
     let a = (alpha.clamp(0.0, 1.0) * 255.0) as u8;
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
 }
@@ -294,16 +296,66 @@ pub fn destructive_filled_button(text: impl Into<String>) -> egui::Button<'stati
 }
 
 /// Compact circular FAB — primary container fill.
-pub fn fab(text: impl Into<String>) -> egui::Button<'static> {
-    egui::Button::new(
-        egui::RichText::new(text.into())
-            .color(color::ON_PRIMARY_CONTAINER)
-            .size(20.0),
-    )
-    .fill(color::PRIMARY_CONTAINER)
-    .rounding(Rounding::same(radius::FULL))
-    .min_size(Vec2::new(44.0, 44.0))
-    .stroke(Stroke::NONE)
+///
+/// `kind` decides which glyph is *painted* (not laid out as text), so the
+/// shape is geometrically centered inside the circle. Text glyphs like
+/// `▶` have their visual mass offset from their bounding-box center, which
+/// makes the play arrow look off-center; painting the triangle ourselves
+/// avoids that.
+#[derive(Copy, Clone)]
+pub enum FabIcon {
+    Play,
+    Stop,
+}
+
+pub fn fab_button(ui: &mut egui::Ui, icon: FabIcon) -> egui::Response {
+    let size = Vec2::new(44.0, 44.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+
+    let visuals = ui.style().interact(&response);
+    let painter = ui.painter();
+    let center = rect.center();
+    let radius_px = rect.width() * 0.5;
+
+    // Background circle with hover/active state-layer overlay.
+    painter.circle_filled(center, radius_px, color::PRIMARY_CONTAINER);
+    if response.hovered() || response.is_pointer_button_down_on() {
+        painter.circle_filled(center, radius_px, with_alpha(color::ON_PRIMARY_CONTAINER, 0.10));
+    }
+    // Subtle focus ring.
+    if response.has_focus() {
+        painter.circle_stroke(center, radius_px, Stroke::new(2.0, visuals.fg_stroke.color));
+    }
+
+    let fg = color::ON_PRIMARY_CONTAINER;
+    match icon {
+        FabIcon::Play => {
+            // Equilateral triangle, optically centered: shift left so the
+            // visual centroid (1/3 from the base) lands on the rect center.
+            let s = 16.0_f32; // base length
+            let h = s * 0.866; // sqrt(3)/2 — height for equilateral
+            // Triangle points: base on the left, apex on the right.
+            // Geometric centroid is at 1/3 of the height from the base.
+            let cx = center.x;
+            let cy = center.y;
+            let p1 = egui::pos2(cx - h / 3.0, cy - s / 2.0); // top-left
+            let p2 = egui::pos2(cx - h / 3.0, cy + s / 2.0); // bottom-left
+            let p3 = egui::pos2(cx + (h * 2.0) / 3.0, cy);   // right apex
+            painter.add(egui::Shape::convex_polygon(
+                vec![p1, p2, p3],
+                fg,
+                Stroke::NONE,
+            ));
+        }
+        FabIcon::Stop => {
+            // Centered square, ~14px.
+            let half = 6.5;
+            let r = egui::Rect::from_center_size(center, Vec2::splat(half * 2.0));
+            painter.rect_filled(r, Rounding::same(2.0), fg);
+        }
+    }
+
+    response
 }
 
 /// 32dp icon button (square-ish, no fill).
@@ -320,56 +372,51 @@ pub fn icon_button(text: impl Into<String>) -> egui::Button<'static> {
 }
 
 // -------------------------------------------------------------------------
-// Chip helpers — small pill labels used to badge config types in the
-// dropdown. Implemented as styled runs in a `LayoutJob` so they can sit
-// inside a `ComboBox` row (which only accepts a single `WidgetText`).
+// Chip helpers — small rounded-pill badges painted directly on the canvas
+// (not LayoutJob runs, which only produce unrounded background rectangles).
 // -------------------------------------------------------------------------
+
+const CHIP_FONT_SIZE: f32 = 10.5;
+const CHIP_PAD_X: f32 = 8.0;
+const CHIP_PAD_Y: f32 = 3.0;
 
 /// Palette for a chip variant. Returned as `(background, foreground)`.
 pub fn chip_palette(kind: &str) -> (Color32, Color32) {
     match kind.to_ascii_lowercase().as_str() {
-        "remote" => (color::PRIMARY_CONTAINER, color::ON_PRIMARY_CONTAINER),
-        _ => (color::SECONDARY_CONTAINER, color::ON_SECONDARY_CONTAINER),
+        // Tertiary container — muted pink/rose. Distinct hue from primary
+        // (purple) so it doesn't blend with the selected-item highlight.
+        "remote" => (color::TERTIARY_CONTAINER, color::ON_TERTIARY_CONTAINER),
+        // Neutral surface for Local — reads as a secondary tag.
+        _ => (color::SURFACE_CONTAINER_HIGHEST, color::ON_SURFACE_VARIANT),
     }
 }
 
-/// Append a chip-styled run to an existing `LayoutJob`.
-pub fn append_chip(job: &mut egui::text::LayoutJob, kind: &str) {
-    let (bg, fg) = chip_palette(kind);
-    job.append(
-        &format!("  {}  ", kind.to_ascii_uppercase()),
-        0.0,
-        egui::TextFormat {
-            color: fg,
-            background: bg,
-            font_id: FontId::new(10.5, FontFamily::Proportional),
-            valign: egui::Align::Center,
-            ..Default::default()
-        },
-    );
+/// The on-screen size of the chip pill for `kind` (uppercase text + padding).
+pub fn chip_size(ui: &egui::Ui, kind: &str) -> Vec2 {
+    let text = kind.to_ascii_uppercase();
+    let font = FontId::new(CHIP_FONT_SIZE, FontFamily::Proportional);
+    let galley = ui.fonts(|f| f.layout_no_wrap(text, font, Color32::WHITE));
+    galley.size() + Vec2::new(CHIP_PAD_X * 2.0, CHIP_PAD_Y * 2.0)
 }
 
-/// Build a `LayoutJob` that renders `name`, a small gap, then a chip badge for `kind`.
-pub fn name_with_chip(name: &str, kind: &str, name_color: Color32) -> egui::text::LayoutJob {
-    let mut job = egui::text::LayoutJob::default();
-    job.append(
-        name,
-        0.0,
-        egui::TextFormat {
-            color: name_color,
-            font_id: FontId::new(14.0, FontFamily::Proportional),
-            valign: egui::Align::Center,
-            ..Default::default()
-        },
+/// Paint a chip pill centered on `center`. Returns the bounding rect.
+pub fn paint_chip(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    kind: &str,
+) -> egui::Rect {
+    let (bg, fg) = chip_palette(kind);
+    let text = kind.to_ascii_uppercase();
+    let font = FontId::new(CHIP_FONT_SIZE, FontFamily::Proportional);
+    let galley = ui.fonts(|f| f.layout_no_wrap(text, font, fg));
+    let size = galley.size() + Vec2::new(CHIP_PAD_X * 2.0, CHIP_PAD_Y * 2.0);
+    let rect = egui::Rect::from_center_size(center, size);
+    painter.rect_filled(rect, Rounding::same(rect.height() * 0.5), bg);
+    painter.galley(
+        rect.left_top() + Vec2::new(CHIP_PAD_X, CHIP_PAD_Y),
+        galley,
+        fg,
     );
-    job.append(
-        "  ",
-        0.0,
-        egui::TextFormat {
-            font_id: FontId::new(14.0, FontFamily::Proportional),
-            ..Default::default()
-        },
-    );
-    append_chip(&mut job, kind);
-    job
+    rect
 }
