@@ -1,0 +1,13 @@
+/target
+
+# Runtime data — created by the app at run time, NOT source code.
+/config/
+/core/
+/sing-box/
+/settings.json
+/settings.json.bak
+/settings.json.tmp
+
+# Atomic-write leftovers anywhere in the tree.
+*.tmp
+*.bak
