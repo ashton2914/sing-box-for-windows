@@ -24,8 +24,7 @@ fn main() {
 
     // ---- 256x256 RGBA for the egui window icon ----
     let window_pix = render_svg(&tree, svg_size, 256);
-    fs::write(out_dir.join("icon.rgba"), window_pix.data())
-        .expect("write icon.rgba");
+    fs::write(out_dir.join("icon.rgba"), window_pix.data()).expect("write icon.rgba");
 
     // ---- multi-size .ico for the Windows exe resource ----
     let mut icon_dir = ico::IconDir::new(ico::ResourceType::Icon);
@@ -55,11 +54,7 @@ fn main() {
     }
 }
 
-fn render_svg(
-    tree: &usvg::Tree,
-    svg_size: usvg::Size,
-    target_px: u32,
-) -> tiny_skia::Pixmap {
+fn render_svg(tree: &usvg::Tree, svg_size: usvg::Size, target_px: u32) -> tiny_skia::Pixmap {
     let mut pix = tiny_skia::Pixmap::new(target_px, target_px).expect("alloc pixmap");
     let scale_x = target_px as f32 / svg_size.width();
     let scale_y = target_px as f32 / svg_size.height();

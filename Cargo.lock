@@ -2420,14 +2420,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "sing-box-launcher"
-version = "0.1.0"
+name = "sing-box-for-windows"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "chrono",
  "eframe",
  "egui",
  "ico",
+ "raw-window-handle 0.6.2",
  "reqwest",
  "resvg",
  "rfd",
@@ -2435,6 +2436,7 @@ dependencies = [
  "serde_json",
  "tiny-skia",
  "usvg",
+ "windows-sys 0.59.0",
  "winresource",
 ]
 

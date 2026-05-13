@@ -30,7 +30,7 @@ pub fn add_config(
         return Err(anyhow!("name is required"));
     }
 
-    let slug = unique_slug(&paths.config_dir, name);
+    let slug = unique_slug(&paths.config_dir);
     let folder = paths.config_folder(&slug);
     std::fs::create_dir_all(&folder).context("failed to create config folder")?;
 
@@ -99,10 +99,7 @@ pub fn edit_entry(
     meta.save(&entry.metadata_file())
         .context("failed to update metadata.json")?;
 
-    let _ = log_tx.send(LogEvent::line(format!(
-        "[updater] edited '{}'",
-        meta.name
-    )));
+    let _ = log_tx.send(LogEvent::line(format!("[updater] edited '{}'", meta.name)));
     Ok(())
 }
 
@@ -140,7 +137,7 @@ fn download_to(url: &str, dest: &Path, log_tx: &Sender<LogEvent>) -> Result<()> 
 
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(30))
-        .user_agent("sing-box-launcher/0.1")
+        .user_agent("sing-box-for-windows/0.1")
         .build()
         .context("failed to build HTTP client")?;
 
@@ -172,8 +169,7 @@ fn copy_local(src: &Path, dest: &Path, log_tx: &Sender<LogEvent>) -> Result<()> 
         dest.display()
     )));
     let bytes = std::fs::read(src).context("failed to read source file")?;
-    serde_json::from_slice::<serde_json::Value>(&bytes)
-        .context("source file is not valid JSON")?;
+    serde_json::from_slice::<serde_json::Value>(&bytes).context("source file is not valid JSON")?;
     write_atomic(dest, &bytes)?;
     let _ = log_tx.send(LogEvent::line(format!(
         "[updater] copied {} bytes",

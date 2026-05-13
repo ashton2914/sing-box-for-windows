@@ -11,9 +11,7 @@
 
 #![allow(dead_code)]
 
-use eframe::egui::{
-    self, Color32, FontFamily, FontId, Margin, Rounding, Stroke, TextStyle, Vec2,
-};
+use eframe::egui::{self, Color32, FontFamily, FontId, Margin, Rounding, Stroke, TextStyle, Vec2};
 
 // -------------------------------------------------------------------------
 // Color tokens (dark scheme — purple seed, M3 baseline)
@@ -73,11 +71,23 @@ pub fn apply(ctx: &egui::Context) {
 
     // ----- Typography (M3 type scale, slightly compacted for desktop) -----
     style.text_styles = [
-        (TextStyle::Heading, FontId::new(22.0, FontFamily::Proportional)),
+        (
+            TextStyle::Heading,
+            FontId::new(22.0, FontFamily::Proportional),
+        ),
         (TextStyle::Body, FontId::new(14.0, FontFamily::Proportional)),
-        (TextStyle::Button, FontId::new(14.0, FontFamily::Proportional)),
-        (TextStyle::Small, FontId::new(12.0, FontFamily::Proportional)),
-        (TextStyle::Monospace, FontId::new(12.5, FontFamily::Monospace)),
+        (
+            TextStyle::Button,
+            FontId::new(14.0, FontFamily::Proportional),
+        ),
+        (
+            TextStyle::Small,
+            FontId::new(12.0, FontFamily::Proportional),
+        ),
+        (
+            TextStyle::Monospace,
+            FontId::new(12.5, FontFamily::Monospace),
+        ),
     ]
     .into();
 
@@ -180,13 +190,26 @@ pub fn with_alpha(c: Color32, alpha: f32) -> Color32 {
 /// share the same visual column.
 pub fn card<R>(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui) -> R) -> R {
     let avail_w = ui.available_width();
+    card_with_width(ui, avail_w, content)
+}
+
+/// Same card as `card`, but with an explicit outer width. Use this for
+/// page-level cards whose width must be tied to the window, not to a
+/// ScrollArea's transient `available_width`.
+pub fn card_with_width<R>(
+    ui: &mut egui::Ui,
+    outer_width: f32,
+    content: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let inner_w = (outer_width - 28.0).max(0.0); // subtract horizontal inner margin (14*2)
     egui::Frame::none()
         .fill(color::SURFACE_CONTAINER_LOW)
         .rounding(Rounding::same(radius::LG))
         .inner_margin(Margin::same(14.0))
         .stroke(Stroke::NONE)
         .show(ui, |ui| {
-            ui.set_min_width(avail_w - 28.0); // subtract horizontal inner margin (14*2)
+            ui.set_min_width(inner_w);
+            ui.set_max_width(inner_w);
             content(ui)
         })
         .inner
@@ -203,96 +226,86 @@ pub fn section_title(ui: &mut egui::Ui, text: &str) {
     );
 }
 
-/// Label Medium (M3) — used for "App", "Sing-box" sub-headers.
+/// Settings subsection header — visually below card title, above rows.
 pub fn subsection_title(ui: &mut egui::Ui, text: &str) {
     ui.label(
         egui::RichText::new(text)
-            .color(color::ON_SURFACE_VARIANT)
-            .size(13.0)
+            .color(color::ON_SURFACE)
+            .size(14.0)
             .strong(),
     );
 }
 
-// Compact button sizing — small enough to feel refined, big enough for touch.
-const BTN_MIN: Vec2 = Vec2::new(72.0, 30.0);
-const BTN_MIN_TEXT: Vec2 = Vec2::new(56.0, 30.0);
+/// Shared settings-row label style. Keep this in sync with switch labels so
+/// switch rows, value rows, and picker rows read as one consistent group.
+pub fn setting_label(text: impl Into<String>) -> egui::RichText {
+    egui::RichText::new(text.into())
+        .color(color::ON_SURFACE)
+        .size(SWITCH_LABEL_FONT)
+}
+
+// Compact button sizing for dense desktop settings/config cards.
+const BTN_MIN: Vec2 = Vec2::new(64.0, 28.0);
+const BTN_MIN_TEXT: Vec2 = Vec2::new(52.0, 28.0);
+
+fn button_text(text: impl Into<String>, color: Color32) -> egui::RichText {
+    egui::RichText::new(text.into())
+        .color(color)
+        .size(SWITCH_LABEL_FONT)
+}
 
 /// M3 Filled Button (high emphasis, primary action).
 pub fn filled_button(text: impl Into<String>) -> egui::Button<'static> {
-    egui::Button::new(
-        egui::RichText::new(text.into())
-            .color(color::ON_PRIMARY)
-            .strong(),
-    )
-    .fill(color::PRIMARY)
-    .rounding(Rounding::same(radius::FULL))
-    .min_size(BTN_MIN)
-    .stroke(Stroke::new(1.0, color::PRIMARY))
+    egui::Button::new(button_text(text, color::ON_PRIMARY))
+        .fill(color::PRIMARY)
+        .rounding(Rounding::same(radius::FULL))
+        .min_size(BTN_MIN)
+        .stroke(Stroke::new(1.0, color::PRIMARY))
 }
 
 /// M3 Filled Tonal Button (medium emphasis).
 pub fn tonal_button(text: impl Into<String>) -> egui::Button<'static> {
-    egui::Button::new(
-        egui::RichText::new(text.into())
-            .color(color::ON_SECONDARY_CONTAINER)
-            .strong(),
-    )
-    .fill(color::SECONDARY_CONTAINER)
-    .rounding(Rounding::same(radius::FULL))
-    .min_size(BTN_MIN)
-    .stroke(Stroke::new(1.0, color::SECONDARY_CONTAINER))
+    egui::Button::new(button_text(text, color::ON_SECONDARY_CONTAINER))
+        .fill(color::SECONDARY_CONTAINER)
+        .rounding(Rounding::same(radius::FULL))
+        .min_size(BTN_MIN)
+        .stroke(Stroke::new(1.0, color::SECONDARY_CONTAINER))
 }
 
 /// M3 Outlined Button (medium emphasis, neutral).
 pub fn outlined_button(text: impl Into<String>) -> egui::Button<'static> {
-    egui::Button::new(
-        egui::RichText::new(text.into())
-            .color(color::PRIMARY)
-            .strong(),
-    )
-    .fill(Color32::TRANSPARENT)
-    .rounding(Rounding::same(radius::FULL))
-    .min_size(BTN_MIN)
-    .stroke(Stroke::new(1.0, color::OUTLINE))
+    egui::Button::new(button_text(text, color::PRIMARY))
+        .fill(Color32::TRANSPARENT)
+        .rounding(Rounding::same(radius::FULL))
+        .min_size(BTN_MIN)
+        .stroke(Stroke::new(1.0, color::OUTLINE))
 }
 
 /// M3 Text Button (low emphasis).
 pub fn text_button(text: impl Into<String>) -> egui::Button<'static> {
-    egui::Button::new(
-        egui::RichText::new(text.into())
-            .color(color::PRIMARY)
-            .strong(),
-    )
-    .fill(Color32::TRANSPARENT)
-    .rounding(Rounding::same(radius::FULL))
-    .min_size(BTN_MIN_TEXT)
-    .stroke(Stroke::NONE)
+    egui::Button::new(button_text(text, color::PRIMARY))
+        .fill(Color32::TRANSPARENT)
+        .rounding(Rounding::same(radius::FULL))
+        .min_size(BTN_MIN_TEXT)
+        .stroke(Stroke::NONE)
 }
 
 /// Destructive variant of [`outlined_button`] using the error palette.
 pub fn destructive_button(text: impl Into<String>) -> egui::Button<'static> {
-    egui::Button::new(
-        egui::RichText::new(text.into())
-            .color(color::ERROR)
-            .strong(),
-    )
-    .fill(Color32::TRANSPARENT)
-    .rounding(Rounding::same(radius::FULL))
-    .min_size(BTN_MIN)
-    .stroke(Stroke::new(1.0, color::ERROR))
+    egui::Button::new(button_text(text, color::ERROR))
+        .fill(Color32::TRANSPARENT)
+        .rounding(Rounding::same(radius::FULL))
+        .min_size(BTN_MIN)
+        .stroke(Stroke::new(1.0, color::ERROR))
 }
 
 /// Destructive filled variant for confirm modals.
 pub fn destructive_filled_button(text: impl Into<String>) -> egui::Button<'static> {
-    egui::Button::new(
-        egui::RichText::new(text.into())
-            .color(color::ON_ERROR)
-            .strong(),
-    )
-    .fill(color::ERROR)
-    .rounding(Rounding::same(radius::FULL))
-    .min_size(BTN_MIN)
-    .stroke(Stroke::new(1.0, color::ERROR))
+    egui::Button::new(button_text(text, color::ON_ERROR))
+        .fill(color::ERROR)
+        .rounding(Rounding::same(radius::FULL))
+        .min_size(BTN_MIN)
+        .stroke(Stroke::new(1.0, color::ERROR))
 }
 
 /// Compact circular FAB — primary container fill.
@@ -320,7 +333,11 @@ pub fn fab_button(ui: &mut egui::Ui, icon: FabIcon) -> egui::Response {
     // Background circle with hover/active state-layer overlay.
     painter.circle_filled(center, radius_px, color::PRIMARY_CONTAINER);
     if response.hovered() || response.is_pointer_button_down_on() {
-        painter.circle_filled(center, radius_px, with_alpha(color::ON_PRIMARY_CONTAINER, 0.10));
+        painter.circle_filled(
+            center,
+            radius_px,
+            with_alpha(color::ON_PRIMARY_CONTAINER, 0.10),
+        );
     }
     // Subtle focus ring.
     if response.has_focus() {
@@ -334,13 +351,13 @@ pub fn fab_button(ui: &mut egui::Ui, icon: FabIcon) -> egui::Response {
             // visual centroid (1/3 from the base) lands on the rect center.
             let s = 16.0_f32; // base length
             let h = s * 0.866; // sqrt(3)/2 — height for equilateral
-            // Triangle points: base on the left, apex on the right.
-            // Geometric centroid is at 1/3 of the height from the base.
+                               // Triangle points: base on the left, apex on the right.
+                               // Geometric centroid is at 1/3 of the height from the base.
             let cx = center.x;
             let cy = center.y;
             let p1 = egui::pos2(cx - h / 3.0, cy - s / 2.0); // top-left
             let p2 = egui::pos2(cx - h / 3.0, cy + s / 2.0); // bottom-left
-            let p3 = egui::pos2(cx + (h * 2.0) / 3.0, cy);   // right apex
+            let p3 = egui::pos2(cx + (h * 2.0) / 3.0, cy); // right apex
             painter.add(egui::Shape::convex_polygon(
                 vec![p1, p2, p3],
                 fg,
@@ -520,10 +537,7 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool, text: &str) -> egui::Response {
             color::ON_SURFACE,
         )
     });
-    let label_pos = egui::pos2(
-        rect.left(),
-        rect.center().y - label_galley.size().y * 0.5,
-    );
+    let label_pos = egui::pos2(rect.left(), rect.center().y - label_galley.size().y * 0.5);
     painter.galley(label_pos, label_galley, color::ON_SURFACE);
 
     // Track, right-aligned.
@@ -538,20 +552,16 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool, text: &str) -> egui::Response {
     if *on {
         painter.rect_filled(track_rect, track_rounding, color::PRIMARY);
     } else {
-        painter.rect_filled(
-            track_rect,
-            track_rounding,
-            color::SURFACE_CONTAINER_HIGHEST,
-        );
-        painter.rect_stroke(
-            track_rect,
-            track_rounding,
-            Stroke::new(1.5, color::OUTLINE),
-        );
+        painter.rect_filled(track_rect, track_rounding, color::SURFACE_CONTAINER_HIGHEST);
+        painter.rect_stroke(track_rect, track_rounding, Stroke::new(1.5, color::OUTLINE));
     }
 
     // Thumb position.
-    let thumb_d = if *on { SWITCH_THUMB_ON } else { SWITCH_THUMB_OFF };
+    let thumb_d = if *on {
+        SWITCH_THUMB_ON
+    } else {
+        SWITCH_THUMB_OFF
+    };
     let thumb_radius = thumb_d * 0.5;
     let inset = (SWITCH_TRACK_H - thumb_d) * 0.5;
     let thumb_x = if *on {
@@ -564,7 +574,11 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool, text: &str) -> egui::Response {
     // State layer behind the thumb — small, only when pointer is actually
     // over the switch (not just somewhere in the row).
     if let Some(alpha) = switch_layer_alpha(ui, &resp, track_rect) {
-        let layer_color = if *on { color::PRIMARY } else { color::ON_SURFACE };
+        let layer_color = if *on {
+            color::PRIMARY
+        } else {
+            color::ON_SURFACE
+        };
         painter.circle_filled(
             thumb_center,
             thumb_radius + 4.0,
@@ -572,7 +586,11 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool, text: &str) -> egui::Response {
         );
     }
 
-    let thumb_color = if *on { color::ON_PRIMARY } else { color::OUTLINE };
+    let thumb_color = if *on {
+        color::ON_PRIMARY
+    } else {
+        color::OUTLINE
+    };
     painter.circle_filled(thumb_center, thumb_radius, thumb_color);
 
     resp
@@ -582,11 +600,7 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool, text: &str) -> egui::Response {
 /// row so the whole label is clickable, but the halo should only appear
 /// when the cursor is actually over the switch track — otherwise hovering
 /// the label text leaves a halo glowing far to the right.
-fn switch_layer_alpha(
-    ui: &egui::Ui,
-    resp: &egui::Response,
-    track_rect: egui::Rect,
-) -> Option<f32> {
+fn switch_layer_alpha(ui: &egui::Ui, resp: &egui::Response, track_rect: egui::Rect) -> Option<f32> {
     let pointer = ui.ctx().input(|i| i.pointer.hover_pos())?;
     let in_track = track_rect.expand(2.0).contains(pointer);
     if !in_track {
@@ -635,10 +649,8 @@ fn paint_state_layer(
 }
 
 pub fn refresh_button(ui: &mut egui::Ui) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(
-        Vec2::splat(CIRCULAR_ICON_SIZE),
-        egui::Sense::click(),
-    );
+    let (rect, resp) =
+        ui.allocate_exact_size(Vec2::splat(CIRCULAR_ICON_SIZE), egui::Sense::click());
     let id = resp.id;
 
     // Persist the click time so the spin survives across frames. Default
@@ -706,10 +718,8 @@ pub fn refresh_button(ui: &mut egui::Ui) -> egui::Response {
 }
 
 pub fn folder_button(ui: &mut egui::Ui) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(
-        Vec2::splat(CIRCULAR_ICON_SIZE),
-        egui::Sense::click(),
-    );
+    let (rect, resp) =
+        ui.allocate_exact_size(Vec2::splat(CIRCULAR_ICON_SIZE), egui::Sense::click());
     let painter = ui.painter().clone();
     paint_state_layer(&painter, &resp, rect, 14.0);
 
@@ -717,10 +727,7 @@ pub fn folder_button(ui: &mut egui::Ui) -> egui::Response {
     let icon_color = color::ON_SURFACE_VARIANT;
     let stroke = Stroke::new(1.4, icon_color);
     let c = rect.center();
-    let body = egui::Rect::from_center_size(
-        egui::pos2(c.x, c.y + 1.0),
-        Vec2::new(15.0, 11.0),
-    );
+    let body = egui::Rect::from_center_size(egui::pos2(c.x, c.y + 1.0), Vec2::new(15.0, 11.0));
     let r = Rounding::same(1.5);
     painter.rect_stroke(body, r, stroke);
     // Tab.
@@ -728,7 +735,16 @@ pub fn folder_button(ui: &mut egui::Ui) -> egui::Response {
         egui::pos2(body.left() + 1.0, body.top() - 3.0),
         Vec2::new(6.5, 3.5),
     );
-    painter.rect_filled(tab, Rounding { nw: 1.5, ne: 1.5, sw: 0.0, se: 0.0 }, icon_color);
+    painter.rect_filled(
+        tab,
+        Rounding {
+            nw: 1.5,
+            ne: 1.5,
+            sw: 0.0,
+            se: 0.0,
+        },
+        icon_color,
+    );
 
     resp
 }
@@ -819,18 +835,11 @@ pub fn modal_dialog<R>(
                                 .size(modal::TITLE_FONT)
                                 .strong(),
                         );
-                        ui.with_layout(
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                if closable
-                                    && close_button(ui)
-                                        .on_hover_text("Close")
-                                        .clicked()
-                                {
-                                    close_requested = true;
-                                }
-                            },
-                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if closable && close_button(ui).on_hover_text("Close").clicked() {
+                                close_requested = true;
+                            }
+                        });
                     });
                     ui.add_space(modal::HEADER_GAP);
 
@@ -922,7 +931,13 @@ pub fn swallow_enter_during_ime(ctx: &egui::Context) {
     if was_composing || had_ime_event {
         ctx.input_mut(|i| {
             i.events.retain(|e| {
-                !matches!(e, egui::Event::Key { key: egui::Key::Enter, .. })
+                !matches!(
+                    e,
+                    egui::Event::Key {
+                        key: egui::Key::Enter,
+                        ..
+                    }
+                )
             });
         });
     }
@@ -933,11 +948,7 @@ pub fn swallow_enter_during_ime(ctx: &egui::Context) {
 /// Canonical single-line text input. Fills its column horizontally,
 /// shows `hint` as a faded placeholder, and stays focused across IME
 /// commits.
-pub fn input_singleline(
-    ui: &mut egui::Ui,
-    text: &mut String,
-    hint: &str,
-) -> egui::Response {
+pub fn input_singleline(ui: &mut egui::Ui, text: &mut String, hint: &str) -> egui::Response {
     let resp = ui.add(
         egui::TextEdit::singleline(text)
             .hint_text(hint_text(hint))

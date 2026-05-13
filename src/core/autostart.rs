@@ -1,7 +1,7 @@
 //! Windows "launch on user login" toggle.
 //!
 //! Implemented by writing the launcher's full path to:
-//!     HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run\sing-box-launcher
+//!     HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run\sing-box-for-windows
 //!
 //! Windows reads that key for the *current* user (no admin needed) and
 //! launches every listed value when the user signs in. We shell out to
@@ -17,7 +17,10 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 /// Name we register under HKCU\…\Run. Stable across upgrades.
-const REG_VALUE: &str = "sing-box-launcher";
+const REG_VALUE: &str = "sing-box-for-windows";
+/// Legacy registry value name used by the launcher's first iteration.
+/// Kept here only so [`migrate_legacy`] can clean it up.
+const LEGACY_REG_VALUES: &[&str] = &["sing-box-launcher"];
 const REG_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 
 /// Suppress the console window that would otherwise flash for `reg.exe`.
@@ -40,7 +43,9 @@ fn launcher_path() -> io::Result<PathBuf> {
 /// True if the autostart entry currently points at *this* exe.
 #[allow(dead_code)] // Reserved for future "detect external removal" UI.
 pub fn is_enabled() -> bool {
-    let Ok(want) = launcher_path() else { return false };
+    let Ok(want) = launcher_path() else {
+        return false;
+    };
     let want_norm = want.to_string_lossy().to_lowercase();
 
     let output = reg_command()
@@ -69,10 +74,7 @@ pub fn set_enabled(enabled: bool) -> io::Result<()> {
             ])
             .status()?;
         if !status.success() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "reg add failed",
-            ));
+            return Err(io::Error::new(io::ErrorKind::Other, "reg add failed"));
         }
     } else {
         // Delete the value if present; treat "not found" as success.
@@ -91,4 +93,17 @@ pub fn set_enabled(enabled: bool) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Best-effort: remove any HKCU\\\u2026\\Run entries left over from
+/// previously-deprecated launcher names so the user doesn't end up with
+/// stale autostart pointing at an old exe path. Failures are silently
+/// ignored \u2014 a missing legacy value is the common case.
+pub fn migrate_legacy() {
+    for legacy in LEGACY_REG_VALUES {
+        let _ = reg_command()
+            .args(["delete", REG_KEY, "/v", legacy, "/f"])
+            .stderr(Stdio::null())
+            .status();
+    }
 }

@@ -11,15 +11,13 @@ use crate::config::settings::Settings;
 use crate::config::updater::{self, NewConfigSpec};
 use crate::core::paths::Paths;
 use crate::core::process::ProcessHandle;
+use crate::core::tray::{self, TrayHandle};
 use crate::log_bus::LogEvent;
 
 /// Commands sent from the UI thread → background worker.
 pub enum BgCmd {
     AddConfig(NewConfigSpec),
-    EditConfig {
-        slug: String,
-        spec: NewConfigSpec,
-    },
+    EditConfig { slug: String, spec: NewConfigSpec },
     UpdateConfig(String),
     DeleteConfig(String),
     SaveSettings(Settings),
@@ -52,6 +50,12 @@ pub struct AddDialogState {
     pub path: String,
     pub url: String,
     pub busy: bool,
+    /// Per-field validation errors. Rendered inline under the matching
+    /// input (NOT in the global status banner) so users immediately see
+    /// which field needs attention.
+    pub name_error: Option<String>,
+    pub path_error: Option<String>,
+    pub url_error: Option<String>,
 }
 
 impl AddDialogState {
@@ -64,11 +68,22 @@ impl AddDialogState {
             path: String::new(),
             url: String::new(),
             busy: false,
+            name_error: None,
+            path_error: None,
+            url_error: None,
         }
     }
 
     pub fn reset(&mut self) {
         *self = Self::new();
+    }
+
+    /// Drop any inline validation errors (e.g. when the user edits a
+    /// field or switches the source kind, so stale messages don't linger).
+    pub fn clear_errors(&mut self) {
+        self.name_error = None;
+        self.path_error = None;
+        self.url_error = None;
     }
 
     /// Pre-fill the dialog from an existing entry for editing.
@@ -105,8 +120,6 @@ pub struct App {
     pub logs: Vec<LogEvent>,
     pub last_error: Option<String>,
     pub last_info: Option<String>,
-    /// Whether the log panel is currently expanded in the UI.
-    pub log_visible: bool,
 
     pub add_dialog: AddDialogState,
     /// `Some(slug)` while the delete confirmation modal is open.
@@ -117,6 +130,13 @@ pub struct App {
     pub bg_tx: Sender<BgCmd>,
     pub log_tx: Sender<LogEvent>,
     bg_rx: Receiver<BgEvent>,
+
+    /// Live tray icon, present while `settings.close_to_tray` is on.
+    /// Dropping it removes the icon and joins the worker thread.
+    tray: Option<TrayHandle>,
+    /// HWND of the real eframe root window, captured from `Frame` on the
+    /// first update. The tray worker uses this for direct Win32 Show/Hide.
+    main_hwnd: Option<usize>,
 }
 
 impl App {
@@ -167,13 +187,14 @@ impl App {
             logs: Vec::new(),
             last_error: None,
             last_info: None,
-            log_visible: false,
             add_dialog: AddDialogState::new(),
             delete_confirm: None,
             destroy_confirm_open: false,
             bg_tx,
             log_tx,
             bg_rx,
+            tray: None,
+            main_hwnd: None,
         };
 
         // Drop a stale selection if its folder is gone.
@@ -184,14 +205,23 @@ impl App {
             }
         }
 
-        if app.settings.auto_start {
-            // Make sure the registry entry is present and points at the
-            // current exe location — covers first launch after enabling
-            // the toggle on a previous run, and the case where the user
-            // moved the exe.
-            let _ = crate::core::autostart::set_enabled(true);
+        if app.settings.auto_start_sing_box {
             app.try_start();
         }
+
+        // One-shot cleanup for HKCU\\\u2026\\Run values and Task Scheduler
+        // tasks left behind by previously-deprecated launcher names. Has
+        // to run BEFORE `sync_persistent_state` so the rewrite below
+        // doesn't race with a stale legacy entry pointing at an old exe.
+        crate::core::autostart::migrate_legacy();
+        crate::core::elevation::migrate_legacy_admin_task();
+
+        // Reconcile the Windows autostart entry and the persistent-admin
+        // scheduled task with the freshly loaded settings. Idempotent —
+        // every launch self-heals if the user moved the exe, deleted the
+        // task externally, etc.
+        app.sync_persistent_state();
+        app.sync_tray();
         app
     }
 
@@ -200,15 +230,80 @@ impl App {
         self.cores = self.paths.list_cores();
     }
 
-    pub fn persist_settings(&mut self) {
-        // Mirror the "launch on Windows startup" toggle to the registry
-        // alongside the on-disk save. Failures are surfaced in the UI but
-        // don't block the rest of the save.
-        if let Err(e) = crate::core::autostart::set_enabled(self.settings.auto_start) {
-            self.last_error =
-                Some(format!("Failed to update Windows autostart entry: {e}"));
+    /// Reconcile the on-disk Windows autostart entry and the Task
+    /// Scheduler "always run as administrator" task with the current
+    /// `Settings`. Called from both `App::new` (startup self-heal) and
+    /// `persist_settings` (after every UI mutation).
+    ///
+    /// Coupling rules — chosen to match the PowerToys autostart pattern:
+    ///   * `always_admin` ON  + `auto_start` ON → task with LogonTrigger
+    ///                                            handles the auto-launch;
+    ///                                            the `HKCU\...\Run` key is
+    ///                                            removed (avoids dual launch).
+    ///   * `always_admin` ON  + `auto_start` OFF → on-demand task only;
+    ///                                             user-launched std-user
+    ///                                             instance silently
+    ///                                             promotes via
+    ///                                             `schtasks /run`.
+    ///   * `always_admin` OFF + `auto_start` ON → no task; Run key is set.
+    ///   * `always_admin` OFF + `auto_start` OFF → no task; no Run key.
+    fn sync_persistent_state(&mut self) {
+        use crate::core::{autostart, elevation};
+
+        if self.settings.always_admin {
+            if elevation::is_elevated() {
+                if let Err(e) =
+                    elevation::ensure_admin_task(&self.paths.root, self.settings.auto_start)
+                {
+                    self.last_error =
+                        Some(format!("Failed to register persistent admin task: {e}"));
+                }
+            }
+            // Remove the Run key whether or not the task registration
+            // succeeded — when always_admin is on, the Run key never
+            // makes sense (it'd launch a non-admin sibling).
+            if let Err(e) = autostart::set_enabled(false) {
+                self.last_error = Some(format!("Failed to clear Windows autostart entry: {e}"));
+            }
+        } else {
+            if let Err(e) = elevation::delete_admin_task() {
+                self.last_error = Some(format!("Failed to remove persistent admin task: {e}"));
+            }
+            if let Err(e) = autostart::set_enabled(self.settings.auto_start) {
+                self.last_error = Some(format!("Failed to update Windows autostart entry: {e}"));
+            }
         }
+    }
+
+    pub fn persist_settings(&mut self) {
+        self.sync_persistent_state();
+        self.sync_tray();
         let _ = self.bg_tx.send(BgCmd::SaveSettings(self.settings.clone()));
+    }
+
+    /// Bring the tray icon in line with `settings.close_to_tray`. Spawns
+    /// the worker thread on toggle-on; drops the handle (which removes
+    /// the icon and joins the worker) on toggle-off.
+    fn sync_tray(&mut self) {
+        if self.settings.close_to_tray || self.settings.silent_start {
+            if self.tray.is_none() {
+                match tray::spawn(self.proc.clone(), self.log_tx.clone()) {
+                    Some(handle) => {
+                        if let Some(hwnd) = self.main_hwnd {
+                            handle.set_main_hwnd(hwnd);
+                        }
+                        self.tray = Some(handle);
+                    }
+                    None => {
+                        self.last_error = Some("Failed to create system tray icon.".into());
+                    }
+                }
+            }
+        } else if self.tray.is_some() {
+            // Dropping the handle posts WM_CLOSE to the tray worker,
+            // which removes the icon and joins the worker thread.
+            self.tray = None;
+        }
     }
 
     pub fn selected_entry(&self) -> Option<&ConfigEntry> {
@@ -247,33 +342,48 @@ impl App {
 
     /// Validate the dialog inputs and dispatch (add or edit) to the worker.
     pub fn submit_add_dialog(&mut self) {
+        // Reset inline errors and validate every field up-front so the
+        // user sees ALL problems at once instead of one-at-a-time.
+        self.add_dialog.clear_errors();
+
         let name = self.add_dialog.name.trim().to_string();
         if name.is_empty() {
-            self.last_error = Some("Name is required".into());
-            return;
+            self.add_dialog.name_error = Some("Name is required".into());
         }
+
         let source = match self.add_dialog.kind {
             SourceKind::Local => {
                 let path = self.add_dialog.path.trim();
                 if path.is_empty() {
-                    self.last_error = Some("File path is required".into());
-                    return;
-                }
-                Source::Local {
-                    path: PathBuf::from(path),
+                    self.add_dialog.path_error = Some("File path is required".into());
+                    None
+                } else {
+                    Some(Source::Local {
+                        path: PathBuf::from(path),
+                    })
                 }
             }
             SourceKind::Remote => {
                 let url = self.add_dialog.url.trim();
                 if url.is_empty() {
-                    self.last_error = Some("URL is required".into());
-                    return;
-                }
-                Source::Remote {
-                    url: url.to_string(),
+                    self.add_dialog.url_error = Some("URL is required".into());
+                    None
+                } else {
+                    Some(Source::Remote {
+                        url: url.to_string(),
+                    })
                 }
             }
         };
+
+        // Bail out if any field failed validation. Errors are rendered
+        // inline next to their inputs by the modal, so we deliberately
+        // do NOT touch `self.last_error` here.
+        let Some(source) = source else { return };
+        if self.add_dialog.name_error.is_some() {
+            return;
+        }
+
         self.add_dialog.busy = true;
         self.last_error = None;
         let spec = NewConfigSpec { name, source };
@@ -288,6 +398,15 @@ impl App {
     }
 
     fn drain_events(&mut self) {
+        // Surface any unexpected sing-box exit (config error, panic,
+        // missing TUN privileges, …) in the red banner. The watcher
+        // thread populates this slot whenever the child terminates
+        // without a `stop()` call having marked the exit as expected.
+        if let Some(msg) = self.proc.take_exit_error() {
+            self.last_error = Some(msg);
+            self.last_info = None;
+        }
+
         while let Ok(ev) = self.bg_rx.try_recv() {
             match ev {
                 BgEvent::Log(le) => {
@@ -345,17 +464,57 @@ impl App {
             }
         }
     }
+
+    /// Intercept the OS-level close (X button / Alt+F4): when the
+    /// "Close button hides to tray" setting is on AND the tray worker
+    /// is healthy, cancel the close and hide the real Win32 window
+    /// directly. The tray worker later shows that HWND directly too, so
+    /// this no longer depends on hidden-window eframe updates.
+    fn handle_close_request(&mut self, ctx: &egui::Context) {
+        let close_requested = ctx.input(|i| i.viewport().close_requested());
+        if close_requested && self.settings.close_to_tray && self.tray.is_some() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            if let (Some(tray), Some(hwnd)) = (self.tray.as_ref(), self.main_hwnd) {
+                tray.hide_main_window(hwnd);
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn main_hwnd_from_frame(frame: &eframe::Frame) -> Option<usize> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    match frame.window_handle().ok()?.as_raw() {
+        RawWindowHandle::Win32(handle) => Some(handle.hwnd.get() as usize),
+        _ => None,
+    }
+}
+
+#[cfg(not(windows))]
+fn main_hwnd_from_frame(_frame: &eframe::Frame) -> Option<usize> {
+    None
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         // Must run BEFORE any widget consumes input. Drops Enter while
         // an IME composition is active so a TextEdit doesn't surrender
         // focus mid-commit and accidentally bake the preedit (e.g. raw
         // pinyin "de'ji'd'j'e") into its buffer.
         crate::theme::swallow_enter_during_ime(ctx);
 
+        if self.main_hwnd.is_none() {
+            self.main_hwnd = main_hwnd_from_frame(frame);
+            if let (Some(tray), Some(hwnd)) = (self.tray.as_ref(), self.main_hwnd) {
+                tray.set_main_hwnd(hwnd);
+            }
+        }
+
         self.drain_events();
+        self.handle_close_request(ctx);
 
         egui::CentralPanel::default().show(ctx, |ui| {
             crate::ui::show(ui, self);
@@ -388,8 +547,7 @@ fn background_loop(
         let timeout = Duration::from_secs(30);
         match cmd_rx.recv_timeout(timeout) {
             Ok(BgCmd::AddConfig(spec)) => {
-                let res = updater::add_config(&paths, &spec, &log_tx)
-                    .map_err(|e| e.to_string());
+                let res = updater::add_config(&paths, &spec, &log_tx).map_err(|e| e.to_string());
                 let _ = event_tx.send(BgEvent::AddDone(res));
                 ctx.request_repaint();
             }
@@ -424,10 +582,8 @@ fn background_loop(
                         );
                         if last_auto_run.elapsed() >= interval {
                             // Only auto-update remote entries.
-                            if let Some(entry) = paths
-                                .list_configs()
-                                .into_iter()
-                                .find(|e| e.slug == slug)
+                            if let Some(entry) =
+                                paths.list_configs().into_iter().find(|e| e.slug == slug)
                             {
                                 if matches!(entry.metadata.source, Source::Remote { .. }) {
                                     let res = updater::refresh_entry(&entry, &log_tx)
@@ -447,11 +603,7 @@ fn background_loop(
     }
 }
 
-fn run_update_one(
-    paths: &Paths,
-    slug: &str,
-    log_tx: &Sender<LogEvent>,
-) -> Result<String, String> {
+fn run_update_one(paths: &Paths, slug: &str, log_tx: &Sender<LogEvent>) -> Result<String, String> {
     let entry = paths
         .list_configs()
         .into_iter()

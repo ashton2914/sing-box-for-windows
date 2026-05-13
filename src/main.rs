@@ -1,5 +1,10 @@
-// Hide the console window on Windows release builds
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// Always run windowed (no console). The launcher is a pure GUI app —
+// logs go through the in-process log bus and into the UI's Logs card,
+// not stdout. We disable the console for *all* builds (not just release)
+// so that re-launching ourselves via ShellExecuteExW("runas") doesn't
+// pop a fresh conhost window the user can't close. cargo run still
+// works because the parent terminal isn't required.
+#![windows_subsystem = "windows"]
 
 mod app;
 mod config;
@@ -24,12 +29,38 @@ fn load_icon() -> egui::IconData {
 }
 
 fn main() -> eframe::Result<()> {
+    let startup_settings = core::paths::Paths::resolve()
+        .ok()
+        .map(|paths| config::settings::Settings::load(&paths.settings_file))
+        .unwrap_or_default();
+
+    // Persistent admin promotion. If the user previously enabled
+    // "Always run as administrator", a per-user Task Scheduler task
+    // with HighestAvailable run level was registered. When this
+    // standard-user instance starts, hand off to that task and exit
+    // before we ever create a window — the elevated copy will own the
+    // session. No UAC prompt fires here.
+    if let Ok(_paths) = core::paths::Paths::resolve() {
+        if startup_settings.always_admin
+            && !core::elevation::is_elevated()
+            && core::elevation::admin_task_exists()
+        {
+            // If the task fails for any reason (registration corrupted,
+            // user removed it manually, etc.) fall through to the normal
+            // standard-user launch so the user can re-enable the toggle.
+            if core::elevation::run_admin_task().is_ok() {
+                std::process::exit(0);
+            }
+        }
+    }
+
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([620.0, 720.0])
             .with_min_inner_size([520.0, 560.0])
             .with_title("sing-box")
-            .with_icon(load_icon()),
+            .with_icon(load_icon())
+            .with_visible(!startup_settings.silent_start),
         ..Default::default()
     };
 
@@ -72,10 +103,7 @@ fn setup_fonts(ctx: &egui::Context) {
         }
     }
 
-    let cjk = [
-        r"C:\Windows\Fonts\msyh.ttc",
-        r"C:\Windows\Fonts\msyh.ttf",
-    ];
+    let cjk = [r"C:\Windows\Fonts\msyh.ttc", r"C:\Windows\Fonts\msyh.ttf"];
     for path in cjk {
         if let Ok(data) = std::fs::read(path) {
             fonts

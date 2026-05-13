@@ -82,53 +82,51 @@ impl ConfigEntry {
     }
 }
 
-/// Generate a filesystem-safe folder slug from a user-given name.
-/// Strips reserved characters and collapses whitespace into dashes.
-pub fn slug_from_name(name: &str) -> String {
-    let mut buf = String::with_capacity(name.len());
-    let mut prev_dash = false;
-    for c in name.chars() {
-        let ch = if c.is_whitespace() {
-            '-'
-        } else if matches!(
-            c,
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '.' | ','
-        ) || c.is_control()
-        {
-            '-'
-        } else {
-            c
-        };
-        if ch == '-' {
-            if !prev_dash {
-                buf.push('-');
-            }
-            prev_dash = true;
-        } else {
-            buf.push(ch.to_ascii_lowercase());
-            prev_dash = false;
-        }
+/// Generate a random 12-char lowercase hex folder slug.
+///
+/// Folder names are not user-visible (the display name lives in
+/// `metadata.json`), so we just need something filesystem-safe and
+/// unlikely to collide. 48 bits of entropy from a tiny xorshift PRNG
+/// seeded by the system clock + a process-local counter is plenty.
+pub fn random_slug() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut state = nanos ^ n.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    if state == 0 {
+        state = 0xDEAD_BEEF_CAFE_BABE;
     }
-    let trimmed = buf.trim_matches('-').to_string();
-    if trimmed.is_empty() {
-        "config".to_string()
-    } else {
-        trimmed
+
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    const LEN: usize = 12;
+    let mut out = String::with_capacity(LEN);
+    for _ in 0..LEN {
+        // xorshift64
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        out.push(HEX[(state as usize) & 0xF] as char);
     }
+    out
 }
 
-/// Pick a slug that doesn't collide with any folder already in `config_dir`.
-/// Appends `-2`, `-3`, … as needed.
-pub fn unique_slug(config_dir: &Path, name: &str) -> String {
-    let base = slug_from_name(name);
-    if !config_dir.join(&base).exists() {
-        return base;
-    }
-    for n in 2..=u32::MAX {
-        let candidate = format!("{base}-{n}");
+/// Pick a random folder slug that doesn't collide with anything already
+/// in `config_dir`.
+pub fn unique_slug(config_dir: &Path) -> String {
+    for _ in 0..1000 {
+        let candidate = random_slug();
         if !config_dir.join(&candidate).exists() {
             return candidate;
         }
     }
-    base
+    // 1000 collisions on a 48-bit space means something is very wrong;
+    // fall back to whatever we get and let the caller surface the error.
+    random_slug()
 }
