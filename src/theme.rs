@@ -371,6 +371,601 @@ pub fn icon_button(text: impl Into<String>) -> egui::Button<'static> {
     .stroke(Stroke::NONE)
 }
 
+/// A small round close button — hand-painted × via two line segments.
+/// Avoids font-glyph fallback issues (e.g. U+2715 falling back to a tofu
+/// box on systems whose default egui font lacks that codepoint).
+pub fn close_button(ui: &mut egui::Ui) -> egui::Response {
+    let size = Vec2::splat(28.0);
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    let painter = ui.painter();
+
+    // State-layer background on hover/active for subtle affordance.
+    let bg = if resp.is_pointer_button_down_on() {
+        with_alpha(color::ON_SURFACE, 0.12)
+    } else if resp.hovered() {
+        with_alpha(color::ON_SURFACE, 0.08)
+    } else {
+        Color32::TRANSPARENT
+    };
+    painter.rect_filled(rect, Rounding::same(rect.height() * 0.5), bg);
+
+    // Two diagonal strokes forming an ×. Inset slightly from the edges.
+    let inset = 8.0;
+    let stroke = Stroke::new(
+        1.6,
+        if resp.hovered() {
+            color::ON_SURFACE
+        } else {
+            color::ON_SURFACE_VARIANT
+        },
+    );
+    let r = rect.shrink(inset);
+    painter.line_segment([r.left_top(), r.right_bottom()], stroke);
+    painter.line_segment([r.right_top(), r.left_bottom()], stroke);
+
+    resp
+}
+
+// -------------------------------------------------------------------------
+// Checkbox — single canonical M3-style checkbox used everywhere.
+//
+// Hand-painted to bypass egui's default toggle look (a tall stroked square
+// with no fill / no state-layer). Geometry:
+//   * 18dp rounded square box
+//   * 2dp stroke when unchecked (ON_SURFACE_VARIANT)
+//   * Solid PRIMARY fill + ON_PRIMARY checkmark when checked
+//   * Round state-layer (8% / 16% ON_SURFACE) on hover/active
+//   * 8dp gap, then a 13pt label in ON_SURFACE
+// -------------------------------------------------------------------------
+
+const CHECKBOX_BOX: f32 = 18.0;
+const CHECKBOX_GAP: f32 = 8.0;
+const CHECKBOX_LABEL_FONT: f32 = 13.0;
+
+pub fn checkbox(ui: &mut egui::Ui, checked: &mut bool, text: &str) -> egui::Response {
+    let label_galley = ui.fonts(|f| {
+        f.layout_no_wrap(
+            text.to_string(),
+            FontId::proportional(CHECKBOX_LABEL_FONT),
+            color::ON_SURFACE,
+        )
+    });
+    let total = Vec2::new(
+        CHECKBOX_BOX + CHECKBOX_GAP + label_galley.size().x,
+        label_galley.size().y.max(CHECKBOX_BOX),
+    );
+    let (rect, mut resp) = ui.allocate_exact_size(total, egui::Sense::click());
+
+    if resp.clicked() {
+        *checked = !*checked;
+        resp.mark_changed();
+    }
+
+    let painter = ui.painter();
+    let box_center = egui::pos2(rect.left() + CHECKBOX_BOX * 0.5, rect.center().y);
+    let box_rect = egui::Rect::from_center_size(box_center, Vec2::splat(CHECKBOX_BOX));
+
+    // Round state-layer behind the box.
+    if resp.is_pointer_button_down_on() {
+        painter.circle_filled(
+            box_center,
+            CHECKBOX_BOX * 0.85,
+            with_alpha(color::ON_SURFACE, 0.16),
+        );
+    } else if resp.hovered() {
+        painter.circle_filled(
+            box_center,
+            CHECKBOX_BOX * 0.85,
+            with_alpha(color::ON_SURFACE, 0.08),
+        );
+    }
+
+    let r = Rounding::same(3.0);
+    if *checked {
+        painter.rect_filled(box_rect, r, color::PRIMARY);
+        // Two-segment checkmark.
+        let stroke = Stroke::new(2.0, color::ON_PRIMARY);
+        let tl = box_rect.left_top();
+        let p1 = tl + Vec2::new(CHECKBOX_BOX * 0.22, CHECKBOX_BOX * 0.52);
+        let p2 = tl + Vec2::new(CHECKBOX_BOX * 0.42, CHECKBOX_BOX * 0.72);
+        let p3 = tl + Vec2::new(CHECKBOX_BOX * 0.78, CHECKBOX_BOX * 0.32);
+        painter.line_segment([p1, p2], stroke);
+        painter.line_segment([p2, p3], stroke);
+    } else {
+        let stroke = Stroke::new(2.0, color::ON_SURFACE_VARIANT);
+        painter.rect_stroke(box_rect, r, stroke);
+    }
+
+    let text_pos = egui::pos2(
+        box_rect.right() + CHECKBOX_GAP,
+        rect.center().y - label_galley.size().y * 0.5,
+    );
+    painter.galley(text_pos, label_galley, color::ON_SURFACE);
+
+    resp
+}
+
+// -------------------------------------------------------------------------
+// Switch — compact desktop toggle for settings rows. Matches a 13pt label
+// height; sits right-aligned in the row so the layout reads as "label …
+// switch". Track 36×20, thumb 12 (off) / 16 (on). State-layer halo only
+// appears while interacting and is small enough not to bleed outside the
+// track edges.
+// -------------------------------------------------------------------------
+
+const SWITCH_TRACK_W: f32 = 36.0;
+const SWITCH_TRACK_H: f32 = 20.0;
+const SWITCH_THUMB_OFF: f32 = 12.0;
+const SWITCH_THUMB_ON: f32 = 16.0;
+const SWITCH_LABEL_FONT: f32 = 13.0;
+const SWITCH_ROW_H: f32 = 28.0;
+
+pub fn switch(ui: &mut egui::Ui, on: &mut bool, text: &str) -> egui::Response {
+    let avail_w = ui.available_width();
+    let row_size = Vec2::new(avail_w, SWITCH_ROW_H);
+    let (rect, mut resp) = ui.allocate_exact_size(row_size, egui::Sense::click());
+
+    if resp.clicked() {
+        *on = !*on;
+        resp.mark_changed();
+    }
+
+    let painter = ui.painter();
+
+    // Label, left-aligned and vertically centered in the row.
+    let label_galley = ui.fonts(|f| {
+        f.layout_no_wrap(
+            text.to_string(),
+            FontId::proportional(SWITCH_LABEL_FONT),
+            color::ON_SURFACE,
+        )
+    });
+    let label_pos = egui::pos2(
+        rect.left(),
+        rect.center().y - label_galley.size().y * 0.5,
+    );
+    painter.galley(label_pos, label_galley, color::ON_SURFACE);
+
+    // Track, right-aligned.
+    let track_rect = egui::Rect::from_min_size(
+        egui::pos2(
+            rect.right() - SWITCH_TRACK_W,
+            rect.center().y - SWITCH_TRACK_H * 0.5,
+        ),
+        Vec2::new(SWITCH_TRACK_W, SWITCH_TRACK_H),
+    );
+    let track_rounding = Rounding::same(SWITCH_TRACK_H * 0.5);
+    if *on {
+        painter.rect_filled(track_rect, track_rounding, color::PRIMARY);
+    } else {
+        painter.rect_filled(
+            track_rect,
+            track_rounding,
+            color::SURFACE_CONTAINER_HIGHEST,
+        );
+        painter.rect_stroke(
+            track_rect,
+            track_rounding,
+            Stroke::new(1.5, color::OUTLINE),
+        );
+    }
+
+    // Thumb position.
+    let thumb_d = if *on { SWITCH_THUMB_ON } else { SWITCH_THUMB_OFF };
+    let thumb_radius = thumb_d * 0.5;
+    let inset = (SWITCH_TRACK_H - thumb_d) * 0.5;
+    let thumb_x = if *on {
+        track_rect.right() - inset - thumb_radius
+    } else {
+        track_rect.left() + inset + thumb_radius
+    };
+    let thumb_center = egui::pos2(thumb_x, track_rect.center().y);
+
+    // State layer behind the thumb — small, only when pointer is actually
+    // over the switch (not just somewhere in the row).
+    if let Some(alpha) = switch_layer_alpha(ui, &resp, track_rect) {
+        let layer_color = if *on { color::PRIMARY } else { color::ON_SURFACE };
+        painter.circle_filled(
+            thumb_center,
+            thumb_radius + 4.0,
+            with_alpha(layer_color, alpha),
+        );
+    }
+
+    let thumb_color = if *on { color::ON_PRIMARY } else { color::OUTLINE };
+    painter.circle_filled(thumb_center, thumb_radius, thumb_color);
+
+    resp
+}
+
+/// Decide whether to draw the switch state-layer halo. We allocate a wide
+/// row so the whole label is clickable, but the halo should only appear
+/// when the cursor is actually over the switch track — otherwise hovering
+/// the label text leaves a halo glowing far to the right.
+fn switch_layer_alpha(
+    ui: &egui::Ui,
+    resp: &egui::Response,
+    track_rect: egui::Rect,
+) -> Option<f32> {
+    let pointer = ui.ctx().input(|i| i.pointer.hover_pos())?;
+    let in_track = track_rect.expand(2.0).contains(pointer);
+    if !in_track {
+        return None;
+    }
+    if resp.is_pointer_button_down_on() {
+        Some(0.16)
+    } else if resp.hovered() {
+        Some(0.08)
+    } else {
+        None
+    }
+}
+
+// -------------------------------------------------------------------------
+// Refresh / folder icon buttons — 32dp circular, hand-painted glyphs.
+//
+// `refresh_button` spins one full rotation on click via per-widget
+// animation state stored in `ctx.data_mut`. Returns the click `Response`
+// so callers can chain `.on_hover_text(…)` etc.
+//
+// `folder_button` paints a tiny folder pictogram — used for "Open core
+// folder" so the row reads as an action affordance, not text.
+// -------------------------------------------------------------------------
+
+const CIRCULAR_ICON_SIZE: f32 = 32.0;
+
+fn paint_state_layer(
+    painter: &egui::Painter,
+    resp: &egui::Response,
+    rect: egui::Rect,
+    radius_layer: f32,
+) {
+    let alpha = if resp.is_pointer_button_down_on() {
+        0.12
+    } else if resp.hovered() {
+        0.08
+    } else {
+        return;
+    };
+    painter.circle_filled(
+        rect.center(),
+        radius_layer,
+        with_alpha(color::ON_SURFACE, alpha),
+    );
+}
+
+pub fn refresh_button(ui: &mut egui::Ui) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(
+        Vec2::splat(CIRCULAR_ICON_SIZE),
+        egui::Sense::click(),
+    );
+    let id = resp.id;
+
+    // Persist the click time so the spin survives across frames. Default
+    // is far in the past so on first paint the icon is at rest.
+    let spin_start: f64 = ui
+        .ctx()
+        .data(|d| d.get_temp::<f64>(id).unwrap_or(f64::NEG_INFINITY));
+    if resp.clicked() {
+        let now = ui.input(|i| i.time);
+        ui.ctx().data_mut(|d| d.insert_temp(id, now));
+    }
+
+    let now = ui.input(|i| i.time);
+    let duration = 0.6_f64;
+    let elapsed = (now - spin_start).max(0.0);
+    let progress = (elapsed / duration).clamp(0.0, 1.0) as f32;
+    let angle = progress * std::f32::consts::TAU;
+    if elapsed < duration {
+        ui.ctx().request_repaint();
+    }
+
+    let painter = ui.painter().clone();
+    paint_state_layer(&painter, &resp, rect, 14.0);
+
+    // Hand-painted refresh glyph: ≈270° arc + arrowhead.
+    let icon_color = color::ON_SURFACE_VARIANT;
+    let stroke = Stroke::new(1.6, icon_color);
+    let center = rect.center();
+    let radius_icon = 7.0;
+    let rot = egui::emath::Rot2::from_angle(angle);
+
+    let arc_start = -std::f32::consts::FRAC_PI_2; // top
+    let sweep = std::f32::consts::PI * 1.5; // 270° clockwise
+    let n = 24;
+    let mut prev: Option<egui::Pos2> = None;
+    for i in 0..=n {
+        let t = i as f32 / n as f32;
+        let a = arc_start + sweep * t;
+        let local = Vec2::new(a.cos(), a.sin()) * radius_icon;
+        let p = center + rot * local;
+        if let Some(pp) = prev {
+            painter.line_segment([pp, p], stroke);
+        }
+        prev = Some(p);
+    }
+
+    // Arrowhead at the end of the arc, tangent to the curve.
+    let a_end = arc_start + sweep;
+    let radial = Vec2::new(a_end.cos(), a_end.sin());
+    let tangent = Vec2::new(-a_end.sin(), a_end.cos());
+    let tip_local = radial * radius_icon;
+    let head = 3.5;
+    let p1 = tip_local - tangent * head + radial * head;
+    let p2 = tip_local - tangent * head - radial * head;
+    let tip = center + rot * tip_local;
+    let pa = center + rot * p1;
+    let pb = center + rot * p2;
+    painter.add(egui::Shape::convex_polygon(
+        vec![tip, pa, pb],
+        icon_color,
+        Stroke::NONE,
+    ));
+
+    resp
+}
+
+pub fn folder_button(ui: &mut egui::Ui) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(
+        Vec2::splat(CIRCULAR_ICON_SIZE),
+        egui::Sense::click(),
+    );
+    let painter = ui.painter().clone();
+    paint_state_layer(&painter, &resp, rect, 14.0);
+
+    // Folder pictogram — small tab on top, body below.
+    let icon_color = color::ON_SURFACE_VARIANT;
+    let stroke = Stroke::new(1.4, icon_color);
+    let c = rect.center();
+    let body = egui::Rect::from_center_size(
+        egui::pos2(c.x, c.y + 1.0),
+        Vec2::new(15.0, 11.0),
+    );
+    let r = Rounding::same(1.5);
+    painter.rect_stroke(body, r, stroke);
+    // Tab.
+    let tab = egui::Rect::from_min_size(
+        egui::pos2(body.left() + 1.0, body.top() - 3.0),
+        Vec2::new(6.5, 3.5),
+    );
+    painter.rect_filled(tab, Rounding { nw: 1.5, ne: 1.5, sw: 0.0, se: 0.0 }, icon_color);
+
+    resp
+}
+
+// -------------------------------------------------------------------------
+// Modal / popup dialog — single canonical look + behavior for every dialog.
+//
+// `modal_frame` is the shape/fill/shadow/stroke spec.
+// `modal_dialog` wires up: dimmed backdrop, centered frame, custom title bar
+// (left-aligned bold title + × close), Esc handling, and returns whether
+// a close was requested. Use this for ALL in-app modals — never spin up
+// `egui::Window` directly (it persists size between renders and gives a
+// chrome we can't fully restyle).
+// -------------------------------------------------------------------------
+
+pub mod modal {
+    pub const TITLE_FONT: f32 = 16.0;
+    pub const HEADER_GAP: f32 = 12.0;
+    pub const INNER_MARGIN: f32 = 16.0;
+    pub const SHADOW_BLUR: f32 = 24.0;
+    pub const BACKDROP_ALPHA: u8 = 80;
+}
+
+/// The standard modal frame: SURFACE_CONTAINER_HIGH fill, LG rounding,
+/// OUTLINE_VARIANT 1dp stroke, deep soft shadow.
+pub fn modal_frame() -> egui::Frame {
+    egui::Frame::none()
+        .fill(color::SURFACE_CONTAINER_HIGH)
+        .rounding(Rounding::same(radius::LG))
+        .inner_margin(Margin::same(modal::INNER_MARGIN))
+        .stroke(Stroke::new(1.0, color::OUTLINE_VARIANT))
+        .shadow(egui::epaint::Shadow {
+            offset: Vec2::new(0.0, 8.0),
+            blur: modal::SHADOW_BLUR,
+            spread: 0.0,
+            color: Color32::from_black_alpha(120),
+        })
+}
+
+pub struct ModalResult<R> {
+    /// True if the × button was clicked or Esc was pressed.
+    /// Caller is responsible for actually dismissing the dialog state.
+    pub close_requested: bool,
+    pub inner: R,
+}
+
+/// Render a modal dialog and return what its body produced plus whether the
+/// user asked to close it. Backdrop blocks clicks behind the dialog.
+///
+/// `closable=false` disables both the × button and Esc dismissal — useful
+/// for "in-flight" states (e.g. while a network add is running).
+pub fn modal_dialog<R>(
+    ctx: &egui::Context,
+    id: &str,
+    title: &str,
+    width: f32,
+    closable: bool,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> ModalResult<R> {
+    // Dimmed backdrop that also captures clicks behind the modal.
+    let screen = ctx.screen_rect();
+    egui::Area::new(egui::Id::new((id, "backdrop")))
+        .order(egui::Order::Middle)
+        .fixed_pos(screen.left_top())
+        .show(ctx, |ui| {
+            let resp = ui.allocate_response(screen.size(), egui::Sense::click());
+            ui.painter().rect_filled(
+                resp.rect,
+                Rounding::ZERO,
+                Color32::from_black_alpha(modal::BACKDROP_ALPHA),
+            );
+        });
+
+    let mut close_requested = false;
+    let area = egui::Area::new(egui::Id::new(id))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+        .show(ctx, |ui| {
+            modal_frame()
+                .show(ui, |ui| {
+                    ui.set_width(width);
+
+                    // Title bar.
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(title)
+                                .color(color::ON_SURFACE)
+                                .size(modal::TITLE_FONT)
+                                .strong(),
+                        );
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                if closable
+                                    && close_button(ui)
+                                        .on_hover_text("Close")
+                                        .clicked()
+                                {
+                                    close_requested = true;
+                                }
+                            },
+                        );
+                    });
+                    ui.add_space(modal::HEADER_GAP);
+
+                    add_contents(ui)
+                })
+                .inner
+        });
+
+    if closable && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        close_requested = true;
+    }
+
+    ModalResult {
+        close_requested,
+        inner: area.inner,
+    }
+}
+
+// -------------------------------------------------------------------------
+// Single-line text input — IME-safe, with faded placeholder.
+//
+// egui's `TextEdit::singleline` treats Enter as "done" and gives up focus.
+// On Windows, when an IME (Microsoft Pinyin, etc.) commits a candidate
+// with Enter, that same Enter is ALSO delivered to egui as a Key::Enter
+// event, which would defocus the field mid-composition. We work around
+// this by re-requesting focus on the same frame whenever an `Ime` event
+// (Preedit / Commit / Disabled) was observed alongside the focus loss.
+// -------------------------------------------------------------------------
+
+const INPUT_HINT_ALPHA: f32 = 0.55;
+const INPUT_MARGIN: Vec2 = Vec2::new(10.0, 6.0);
+
+/// Build a faded `RichText` suitable for use as a `TextEdit` hint — dim
+/// enough to read as a placeholder, not as real input.
+pub fn hint_text(s: &str) -> egui::RichText {
+    egui::RichText::new(s).color(with_alpha(color::ON_SURFACE_VARIANT, INPUT_HINT_ALPHA))
+}
+
+/// If `response` lost focus on the same frame an IME event fired, re-grab
+/// focus. Belt-and-suspenders companion to [`swallow_enter_during_ime`] —
+/// useful when an IME backend skips the Preedit lifecycle and only fires
+/// a Commit alongside Enter.
+pub fn keep_focus_on_ime_enter(ctx: &egui::Context, response: &egui::Response) {
+    if !response.lost_focus() {
+        return;
+    }
+    let ime_event_this_frame =
+        ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Ime(_))));
+    if ime_event_this_frame {
+        response.request_focus();
+    }
+}
+
+/// Swallow Enter key events while an IME composition is active.
+///
+/// Microsoft Pinyin (and most CJK IMEs) use Enter to commit a candidate.
+/// In raw Win32 / browsers / native textboxes the Enter is consumed by
+/// the IME and the underlying control never sees it. egui (via winit)
+/// instead delivers BOTH an `Ime::Commit` event AND a `Key::Enter`
+/// event, so a `TextEdit::singleline` would surrender focus mid-commit
+/// — and worse, in the Preedit-then-Enter sequence the visible preedit
+/// (e.g. "de'ji'd'j'e") gets baked into the buffer because focus is
+/// lost before the Commit replaces it.
+///
+/// Call this once per frame, before any widget runs, to drop Enter
+/// presses for as long as IME composition is active. Composition state
+/// is tracked across frames via `ctx.data_mut`, so the Enter that
+/// triggers the commit is also dropped.
+pub fn swallow_enter_during_ime(ctx: &egui::Context) {
+    let id = egui::Id::new("__theme_ime_composing__");
+    let was_composing: bool = ctx.data(|d| d.get_temp(id).unwrap_or(false));
+
+    let (had_ime_event, new_composing) = ctx.input(|i| {
+        let mut composing = was_composing;
+        let mut had = false;
+        for event in &i.events {
+            if let egui::Event::Ime(ime) = event {
+                had = true;
+                composing = match ime {
+                    egui::ImeEvent::Preedit(s) => !s.is_empty(),
+                    egui::ImeEvent::Commit(_) | egui::ImeEvent::Disabled => false,
+                    egui::ImeEvent::Enabled => composing,
+                };
+            }
+        }
+        (had, composing)
+    });
+
+    if was_composing || had_ime_event {
+        ctx.input_mut(|i| {
+            i.events.retain(|e| {
+                !matches!(e, egui::Event::Key { key: egui::Key::Enter, .. })
+            });
+        });
+    }
+
+    ctx.data_mut(|d| d.insert_temp(id, new_composing));
+}
+
+/// Canonical single-line text input. Fills its column horizontally,
+/// shows `hint` as a faded placeholder, and stays focused across IME
+/// commits.
+pub fn input_singleline(
+    ui: &mut egui::Ui,
+    text: &mut String,
+    hint: &str,
+) -> egui::Response {
+    let resp = ui.add(
+        egui::TextEdit::singleline(text)
+            .hint_text(hint_text(hint))
+            .desired_width(f32::INFINITY)
+            .margin(INPUT_MARGIN),
+    );
+    keep_focus_on_ime_enter(ui.ctx(), &resp);
+    resp
+}
+
+/// Same as [`input_singleline`] but with an explicit `size` — use when the
+/// input shares a row with another widget (e.g. a Browse… button).
+pub fn input_singleline_sized(
+    ui: &mut egui::Ui,
+    text: &mut String,
+    hint: &str,
+    size: impl Into<Vec2>,
+) -> egui::Response {
+    let resp = ui.add_sized(
+        size,
+        egui::TextEdit::singleline(text)
+            .hint_text(hint_text(hint))
+            .margin(INPUT_MARGIN),
+    );
+    keep_focus_on_ime_enter(ui.ctx(), &resp);
+    resp
+}
+
 // -------------------------------------------------------------------------
 // Chip helpers — small rounded-pill badges painted directly on the canvas
 // (not LayoutJob runs, which only produce unrounded background rectangles).

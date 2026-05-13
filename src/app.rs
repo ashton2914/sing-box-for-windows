@@ -185,6 +185,11 @@ impl App {
         }
 
         if app.settings.auto_start {
+            // Make sure the registry entry is present and points at the
+            // current exe location — covers first launch after enabling
+            // the toggle on a previous run, and the case where the user
+            // moved the exe.
+            let _ = crate::core::autostart::set_enabled(true);
             app.try_start();
         }
         app
@@ -195,7 +200,14 @@ impl App {
         self.cores = self.paths.list_cores();
     }
 
-    pub fn persist_settings(&self) {
+    pub fn persist_settings(&mut self) {
+        // Mirror the "launch on Windows startup" toggle to the registry
+        // alongside the on-disk save. Failures are surfaced in the UI but
+        // don't block the rest of the save.
+        if let Err(e) = crate::core::autostart::set_enabled(self.settings.auto_start) {
+            self.last_error =
+                Some(format!("Failed to update Windows autostart entry: {e}"));
+        }
         let _ = self.bg_tx.send(BgCmd::SaveSettings(self.settings.clone()));
     }
 
@@ -337,6 +349,12 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Must run BEFORE any widget consumes input. Drops Enter while
+        // an IME composition is active so a TextEdit doesn't surrender
+        // focus mid-commit and accidentally bake the preedit (e.g. raw
+        // pinyin "de'ji'd'j'e") into its buffer.
+        crate::theme::swallow_enter_during_ime(ctx);
+
         self.drain_events();
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -402,7 +420,7 @@ fn background_loop(
                 if settings.auto_update {
                     if let Some(slug) = settings.selected_config.clone() {
                         let interval = Duration::from_secs(
-                            settings.update_interval_minutes.max(1).saturating_mul(60),
+                            settings.update_interval_hours.max(1).saturating_mul(3600),
                         );
                         if last_auto_run.elapsed() >= interval {
                             // Only auto-update remote entries.

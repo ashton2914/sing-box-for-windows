@@ -17,7 +17,7 @@ pub struct Settings {
     pub auto_start: bool,
     /// Periodically re-fetch the selected config from its source.
     pub auto_update: bool,
-    pub update_interval_minutes: u64,
+    pub update_interval_hours: u64,
 }
 
 impl Default for Settings {
@@ -27,7 +27,7 @@ impl Default for Settings {
             selected_core: None,
             auto_start: false,
             auto_update: false,
-            update_interval_minutes: 360,
+            update_interval_hours: 24,
         }
     }
 }
