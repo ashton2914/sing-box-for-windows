@@ -16,15 +16,14 @@ use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
+use crate::core::win::CREATE_NO_WINDOW;
+
 /// Name we register under HKCU\…\Run. Stable across upgrades.
 const REG_VALUE: &str = "sing-box-for-windows";
 /// Legacy registry value name used by the launcher's first iteration.
 /// Kept here only so [`migrate_legacy`] can clean it up.
 const LEGACY_REG_VALUES: &[&str] = &["sing-box-launcher"];
 const REG_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
-
-/// Suppress the console window that would otherwise flash for `reg.exe`.
-const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 fn reg_command() -> Command {
     let mut c = Command::new("reg.exe");

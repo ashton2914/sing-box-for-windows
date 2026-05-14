@@ -29,9 +29,13 @@ fn load_icon() -> egui::IconData {
 }
 
 fn main() -> eframe::Result<()> {
-    let startup_settings = core::paths::Paths::resolve()
-        .ok()
-        .map(|paths| config::settings::Settings::load(&paths.settings_file))
+    // Resolve once and share. `Paths::resolve` does `create_dir_all` for
+    // `core/`, `config/` and `sing-box/` plus a few `current_exe` /
+    // `current_dir` syscalls; the previous code called it twice in a row.
+    let paths = core::paths::Paths::resolve().ok();
+    let startup_settings = paths
+        .as_ref()
+        .map(|p| config::settings::Settings::load(&p.settings_file))
         .unwrap_or_default();
 
     // Persistent admin promotion. If the user previously enabled
@@ -40,17 +44,16 @@ fn main() -> eframe::Result<()> {
     // standard-user instance starts, hand off to that task and exit
     // before we ever create a window — the elevated copy will own the
     // session. No UAC prompt fires here.
-    if let Ok(_paths) = core::paths::Paths::resolve() {
-        if startup_settings.always_admin
-            && !core::elevation::is_elevated()
-            && core::elevation::admin_task_exists()
-        {
-            // If the task fails for any reason (registration corrupted,
-            // user removed it manually, etc.) fall through to the normal
-            // standard-user launch so the user can re-enable the toggle.
-            if core::elevation::run_admin_task().is_ok() {
-                std::process::exit(0);
-            }
+    if paths.is_some()
+        && startup_settings.always_admin
+        && !core::elevation::is_elevated()
+        && core::elevation::admin_task_exists()
+    {
+        // If the task fails for any reason (registration corrupted,
+        // user removed it manually, etc.) fall through to the normal
+        // standard-user launch so the user can re-enable the toggle.
+        if core::elevation::run_admin_task().is_ok() {
+            std::process::exit(0);
         }
     }
 

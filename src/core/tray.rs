@@ -38,6 +38,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::core::process::ProcessHandle;
+use crate::core::win::wide;
 use crate::log_bus::LogEvent;
 
 /// Custom message id Shell_NotifyIcon will post back for icon mouse events.
@@ -450,8 +451,4 @@ unsafe extern "system" fn enum_main_window_proc(hwnd: HWND, lparam: LPARAM) -> B
     }
 
     1
-}
-
-fn wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(std::iter::once(0)).collect()
 }

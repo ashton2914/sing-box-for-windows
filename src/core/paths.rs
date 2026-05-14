@@ -47,6 +47,23 @@ impl Paths {
         self.config_dir.join(slug)
     }
 
+    /// Load a single `ConfigEntry` by slug. Cheaper than `list_configs`
+    /// for the common "operate on one entry" path (update / edit /
+    /// delete) — reads exactly one `metadata.json` instead of scanning
+    /// every sub-folder in `config/`.
+    pub fn load_entry(&self, slug: &str) -> Option<ConfigEntry> {
+        let folder = self.config_folder(slug);
+        if !folder.is_dir() {
+            return None;
+        }
+        let metadata = ConfigMetadata::load(&folder.join(METADATA_FILENAME)).ok()?;
+        Some(ConfigEntry {
+            slug: slug.to_string(),
+            metadata,
+            folder,
+        })
+    }
+
     pub fn core_path(&self, name: &str) -> PathBuf {
         self.core_dir.join(name)
     }

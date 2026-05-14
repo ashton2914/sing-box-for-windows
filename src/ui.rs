@@ -163,27 +163,37 @@ fn config_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
     });
 }
 
-/// Custom ComboBox replacement that paints a real rounded-pill chip next
-/// to each config name. egui's `ComboBox` only accepts a single
-/// `WidgetText`, so we hand-roll the closed button + popup to get a chip
-/// Custom ComboBox replacement that paints a real rounded-pill chip next
-/// to each config name. egui's `ComboBox` only accepts a single
-/// `WidgetText` (which can't carry a rounded pill paint), and its
-/// `popup_below_widget` forces a frame style we can't theme. So we
-/// hand-roll both the closed combo and the popup to make them feel like a
-/// single unified widget:
-///   * shared surface tone, shared outline color
-///   * when open, the closed combo's bottom corners flatten and the popup
-///     glues to it with matching top-flat corners — together they form
-///     one outlined shape
-///   * selected row uses a subtle 12% PRIMARY tonal layer instead of a
-///     full primary-container fill, so the chip and name keep their
-///     normal colors and the dropdown reads as continuous
-fn config_combo(ui: &mut egui::Ui, app: &mut App, width: f32) {
-    let popup_id = ui.make_persistent_id("config_combo_v3");
+/// Hand-rolled combo widget shared by `config_combo` and `core_combo`.
+///
+/// egui's built-in `ComboBox` only accepts a single `WidgetText` for the
+/// closed state and forces a popup chrome we can't theme. Both of our
+/// selectors want a custom paint (chip after the name, etc.) and a popup
+/// that visually glues to the closed combo, so we paint the whole shell
+/// here once instead of duplicating ~150 lines per selector.
+///
+/// The shell handles:
+///   * outlined surface tile with hover state-layer when closed,
+///   * adaptive corner rounding (bottom corners flatten while open so the
+///     popup frame can dock on with matching top-flat corners),
+///   * a centered chevron on the right,
+///   * popup `Area` placement, dismissal on outside click, and the
+///     `ui.memory` open/close bookkeeping.
+///
+/// `paint_closed` paints the left-of-chevron region of the closed combo
+/// (called every frame). `render_items` paints the popup body (called
+/// only while open) and returns `Some(value)` when the user clicked a
+/// selectable row, which becomes this function's return value.
+fn popup_combo<T>(
+    ui: &mut egui::Ui,
+    id_source: &'static str,
+    width: f32,
+    height: f32,
+    paint_closed: impl FnOnce(&mut egui::Ui, &egui::Painter, egui::Rect, /*content_right*/ f32),
+    render_items: impl FnOnce(&mut egui::Ui) -> Option<T>,
+) -> Option<T> {
+    let popup_id = ui.make_persistent_id(id_source);
     let is_open = ui.memory(|m| m.is_popup_open(popup_id));
 
-    let height = 36.0;
     let response = ui.allocate_response(egui::vec2(width, height), egui::Sense::click());
     let rect = response.rect;
     let painter = ui.painter().clone();
@@ -219,11 +229,10 @@ fn config_combo(ui: &mut egui::Ui, app: &mut App, width: f32) {
     let chev_w = 9.0;
     let chev_h = 5.0;
     let chev_cx = inner.right() - chev_w * 0.5;
-    let chev_cy = center_y;
     let chev = vec![
-        egui::pos2(chev_cx - chev_w * 0.5, chev_cy - chev_h * 0.5),
-        egui::pos2(chev_cx + chev_w * 0.5, chev_cy - chev_h * 0.5),
-        egui::pos2(chev_cx, chev_cy + chev_h * 0.5),
+        egui::pos2(chev_cx - chev_w * 0.5, center_y - chev_h * 0.5),
+        egui::pos2(chev_cx + chev_w * 0.5, center_y - chev_h * 0.5),
+        egui::pos2(chev_cx, center_y + chev_h * 0.5),
     ];
     painter.add(egui::Shape::convex_polygon(
         chev,
@@ -232,39 +241,94 @@ fn config_combo(ui: &mut egui::Ui, app: &mut App, width: f32) {
     ));
     let content_right = inner.right() - chev_w - 8.0;
 
-    // Left side: name + chip OR placeholder.
-    let name_font = egui::FontId::proportional(14.0);
-    if let Some(entry) = app.selected_entry() {
-        let kind = entry.metadata.source.kind_label();
-        let name_galley = ui
-            .fonts(|f| f.layout_no_wrap(entry.metadata.name.clone(), name_font, color::ON_SURFACE));
-        let ns = name_galley.size();
-        painter.galley(
-            egui::pos2(inner.left(), center_y - ns.y * 0.5),
-            name_galley,
-            color::ON_SURFACE,
-        );
-        let cs = theme::chip_size(ui, kind);
-        let chip_left = inner.left() + ns.x + 8.0;
-        if chip_left + cs.x <= content_right {
-            let chip_center = egui::pos2(chip_left + cs.x * 0.5, center_y);
-            let _ = theme::paint_chip(ui, &painter, chip_center, kind);
-        }
-    } else {
-        let placeholder =
-            ui.fonts(|f| f.layout_no_wrap("(none)".into(), name_font, color::ON_SURFACE_VARIANT));
-        let ps = placeholder.size();
-        painter.galley(
-            egui::pos2(inner.left(), center_y - ps.y * 0.5),
-            placeholder,
-            color::ON_SURFACE_VARIANT,
-        );
-    }
+    paint_closed(ui, &painter, inner, content_right);
 
     if response.clicked() {
         ui.memory_mut(|m| m.toggle_popup(popup_id));
     }
 
+    let mut picked: Option<T> = None;
+    let mut close_requested = false;
+
+    if is_open {
+        let area = egui::Area::new(popup_id.with("area"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(rect.left_bottom())
+            .show(ui.ctx(), |ui| {
+                egui::Frame::none()
+                    .fill(surface)
+                    .stroke(outline)
+                    .rounding(egui::Rounding {
+                        nw: 0.0,
+                        ne: 0.0,
+                        sw: radius::SM,
+                        se: radius::SM,
+                    })
+                    .inner_margin(egui::Margin::symmetric(4.0, 6.0))
+                    .show(ui, |ui| {
+                        ui.set_min_width(width - 8.0);
+                        ui.set_max_width(width - 8.0);
+                        if let Some(p) = render_items(ui) {
+                            picked = Some(p);
+                            close_requested = true;
+                        }
+                    });
+            });
+
+        let outside_click = ui.input(|i| {
+            i.pointer.any_click()
+                && i.pointer
+                    .interact_pos()
+                    .map(|p| !area.response.rect.contains(p) && !rect.contains(p))
+                    .unwrap_or(false)
+        });
+        if outside_click {
+            close_requested = true;
+        }
+    }
+
+    if close_requested {
+        ui.memory_mut(|m| m.close_popup());
+    }
+    picked
+}
+
+/// Paint a single selectable row inside a [`popup_combo`] body. Handles
+/// the row hit-rect, the selection / hover state-layer fill, and lets
+/// the caller paint the actual row content via `paint`. Returns `true`
+/// when the user clicked the row (the caller should stop iterating and
+/// return the corresponding value to `popup_combo`).
+fn popup_combo_row(
+    ui: &mut egui::Ui,
+    height: f32,
+    selected: bool,
+    paint: impl FnOnce(&mut egui::Ui, &egui::Painter, egui::Rect),
+) -> bool {
+    let resp = ui.allocate_response(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::click(),
+    );
+    let r = resp.rect;
+    let p = ui.painter().clone();
+
+    let bg = if selected {
+        theme::with_alpha(color::PRIMARY, 0.14)
+    } else if resp.hovered() {
+        theme::with_alpha(color::ON_SURFACE, 0.06)
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    p.rect_filled(r, egui::Rounding::same(radius::XS), bg);
+
+    let inner = r.shrink2(egui::vec2(8.0, 0.0));
+    paint(ui, &p, inner);
+
+    resp.clicked()
+}
+
+/// Custom ComboBox replacement that paints a real rounded-pill chip next
+/// to each config name. Built on top of [`popup_combo`].
+fn config_combo(ui: &mut egui::Ui, app: &mut App, width: f32) {
     // Snapshot config data so we don't borrow `app` across the popup closure.
     let configs_snapshot: Vec<(String, String, String)> = app
         .configs
@@ -278,272 +342,154 @@ fn config_combo(ui: &mut egui::Ui, app: &mut App, width: f32) {
         })
         .collect();
     let current_selected = app.settings.selected_config.clone();
-    let mut new_selected: Option<String> = None;
-    let mut close_requested = false;
+    let selected_summary = app
+        .selected_entry()
+        .map(|e| (e.metadata.name.clone(), e.metadata.source.kind_label()));
 
-    if is_open {
-        let area = egui::Area::new(popup_id.with("area"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(rect.left_bottom())
-            .show(ui.ctx(), |ui| {
-                // Frame glued to the closed combo: top corners flat, same
-                // surface + outline so the two pieces read as one shape.
-                egui::Frame::none()
-                    .fill(surface)
-                    .stroke(outline)
-                    .rounding(egui::Rounding {
-                        nw: 0.0,
-                        ne: 0.0,
-                        sw: radius::SM,
-                        se: radius::SM,
-                    })
-                    .inner_margin(egui::Margin::symmetric(4.0, 6.0))
-                    .show(ui, |ui| {
-                        ui.set_min_width(width - 8.0);
-                        ui.set_max_width(width - 8.0);
-
-                        if configs_snapshot.is_empty() {
-                            ui.label(
-                                egui::RichText::new("(no configs — click + Add)")
-                                    .color(color::ON_SURFACE_VARIANT),
-                            );
-                            return;
-                        }
-
-                        for (slug, name, kind) in &configs_snapshot {
-                            let selected = current_selected.as_deref() == Some(slug.as_str());
-                            let item_resp = ui.allocate_response(
-                                egui::vec2(ui.available_width(), 32.0),
-                                egui::Sense::click(),
-                            );
-                            let r = item_resp.rect;
-                            let p = ui.painter().clone();
-
-                            // Subtle tonal selection layer; no full primary
-                            // container fill, so the chip + name keep their
-                            // normal colors and the row reads as part of the
-                            // combo surface.
-                            let item_bg = if selected {
-                                theme::with_alpha(color::PRIMARY, 0.14)
-                            } else if item_resp.hovered() {
-                                theme::with_alpha(color::ON_SURFACE, 0.06)
-                            } else {
-                                egui::Color32::TRANSPARENT
-                            };
-                            p.rect_filled(r, egui::Rounding::same(radius::XS), item_bg);
-
-                            let inner = r.shrink2(egui::vec2(8.0, 0.0));
-                            let cy = inner.center().y;
-                            let name_galley = ui.fonts(|f| {
-                                f.layout_no_wrap(
-                                    name.clone(),
-                                    egui::FontId::proportional(14.0),
-                                    color::ON_SURFACE,
-                                )
-                            });
-                            let ns = name_galley.size();
-                            p.galley(
-                                egui::pos2(inner.left(), cy - ns.y * 0.5),
-                                name_galley,
-                                color::ON_SURFACE,
-                            );
-                            let cs = theme::chip_size(ui, kind);
-                            let chip_center =
-                                egui::pos2(inner.left() + ns.x + 8.0 + cs.x * 0.5, cy);
-                            let _ = theme::paint_chip(ui, &p, chip_center, kind);
-
-                            if item_resp.clicked() {
-                                new_selected = Some(slug.clone());
-                                close_requested = true;
-                            }
-                        }
+    let picked = popup_combo(
+        ui,
+        "config_combo_v3",
+        width,
+        36.0,
+        |ui, painter, inner, content_right| {
+            // Closed-combo content: name + chip OR placeholder.
+            let name_font = egui::FontId::proportional(14.0);
+            let center_y = inner.center().y;
+            if let Some((name, kind)) = &selected_summary {
+                let name_galley =
+                    ui.fonts(|f| f.layout_no_wrap(name.clone(), name_font, color::ON_SURFACE));
+                let ns = name_galley.size();
+                painter.galley(
+                    egui::pos2(inner.left(), center_y - ns.y * 0.5),
+                    name_galley,
+                    color::ON_SURFACE,
+                );
+                let cs = theme::chip_size(ui, kind);
+                let chip_left = inner.left() + ns.x + 8.0;
+                if chip_left + cs.x <= content_right {
+                    let chip_center = egui::pos2(chip_left + cs.x * 0.5, center_y);
+                    let _ = theme::paint_chip(ui, painter, chip_center, kind);
+                }
+            } else {
+                let placeholder = ui.fonts(|f| {
+                    f.layout_no_wrap("(none)".into(), name_font, color::ON_SURFACE_VARIANT)
+                });
+                let ps = placeholder.size();
+                painter.galley(
+                    egui::pos2(inner.left(), center_y - ps.y * 0.5),
+                    placeholder,
+                    color::ON_SURFACE_VARIANT,
+                );
+            }
+        },
+        |ui| {
+            if configs_snapshot.is_empty() {
+                ui.label(
+                    egui::RichText::new("(no configs — click + Add)")
+                        .color(color::ON_SURFACE_VARIANT),
+                );
+                return None;
+            }
+            for (slug, name, kind) in &configs_snapshot {
+                let selected = current_selected.as_deref() == Some(slug.as_str());
+                let clicked = popup_combo_row(ui, 32.0, selected, |ui, p, inner| {
+                    let cy = inner.center().y;
+                    let name_galley = ui.fonts(|f| {
+                        f.layout_no_wrap(
+                            name.clone(),
+                            egui::FontId::proportional(14.0),
+                            color::ON_SURFACE,
+                        )
                     });
-            });
+                    let ns = name_galley.size();
+                    p.galley(
+                        egui::pos2(inner.left(), cy - ns.y * 0.5),
+                        name_galley,
+                        color::ON_SURFACE,
+                    );
+                    let cs = theme::chip_size(ui, kind);
+                    let chip_center = egui::pos2(inner.left() + ns.x + 8.0 + cs.x * 0.5, cy);
+                    let _ = theme::paint_chip(ui, p, chip_center, kind);
+                });
+                if clicked {
+                    return Some(slug.clone());
+                }
+            }
+            None
+        },
+    );
 
-        // Close on outside click. The Area's response covers the whole
-        // popup; the closed combo handles its own clicks via toggle.
-        let outside_click = ui.input(|i| {
-            i.pointer.any_click()
-                && i.pointer
-                    .interact_pos()
-                    .map(|p| !area.response.rect.contains(p) && !rect.contains(p))
-                    .unwrap_or(false)
-        });
-        if outside_click {
-            close_requested = true;
-        }
-    }
-
-    if let Some(sel) = new_selected {
+    if let Some(sel) = picked {
         if app.settings.selected_config.as_deref() != Some(sel.as_str()) {
             app.settings.selected_config = Some(sel);
             app.persist_settings();
         }
-    }
-    if close_requested {
-        ui.memory_mut(|m| m.close_popup());
     }
 }
 
 /// Hand-painted core selector — same combo language as `config_combo` so
 /// the Settings card and the Configs card read as one design system.
 fn core_combo(ui: &mut egui::Ui, app: &mut App, width: f32) {
-    let popup_id = ui.make_persistent_id("core_combo_v1");
-    let is_open = ui.memory(|m| m.is_popup_open(popup_id));
-
-    let height = 32.0;
-    let response = ui.allocate_response(egui::vec2(width, height), egui::Sense::click());
-    let rect = response.rect;
-    let painter = ui.painter().clone();
-
-    let outline = egui::Stroke::new(1.0, color::OUTLINE_VARIANT);
-    let surface = color::SURFACE_CONTAINER;
-    let combo_rounding = if is_open {
-        egui::Rounding {
-            nw: radius::SM,
-            ne: radius::SM,
-            sw: 0.0,
-            se: 0.0,
-        }
-    } else {
-        egui::Rounding::same(radius::SM)
-    };
-    painter.rect(rect, combo_rounding, surface, outline);
-    if response.hovered() && !is_open {
-        painter.rect_filled(
-            rect,
-            combo_rounding,
-            theme::with_alpha(color::ON_SURFACE, 0.04),
-        );
-    }
-
-    let inner = rect.shrink2(egui::vec2(12.0, 0.0));
-    let center_y = inner.center().y;
-
-    // Chevron.
-    let chev_color = color::ON_SURFACE_VARIANT;
-    let chev_w = 9.0;
-    let chev_h = 5.0;
-    let chev_cx = inner.right() - chev_w * 0.5;
-    let chev = vec![
-        egui::pos2(chev_cx - chev_w * 0.5, center_y - chev_h * 0.5),
-        egui::pos2(chev_cx + chev_w * 0.5, center_y - chev_h * 0.5),
-        egui::pos2(chev_cx, center_y + chev_h * 0.5),
-    ];
-    painter.add(egui::Shape::convex_polygon(
-        chev,
-        chev_color,
-        egui::Stroke::NONE,
-    ));
-
-    let name_font = egui::FontId::proportional(13.5);
-    let (text, color_) = match app.settings.selected_core.as_deref() {
-        Some(name) => (name.to_string(), color::ON_SURFACE),
-        None => ("(none)".to_string(), color::ON_SURFACE_VARIANT),
-    };
-    let galley = ui.fonts(|f| f.layout_no_wrap(text, name_font, color_));
-    painter.galley(
-        egui::pos2(inner.left(), center_y - galley.size().y * 0.5),
-        galley,
-        color_,
-    );
-
-    if response.clicked() {
-        ui.memory_mut(|m| m.toggle_popup(popup_id));
-    }
-
     let cores_snapshot: Vec<String> = app.cores.clone();
     let current = app.settings.selected_core.clone();
-    let mut new_selected: Option<Option<String>> = None;
-    let mut close_requested = false;
+    let current_label = current.clone();
 
-    if is_open {
-        let area = egui::Area::new(popup_id.with("area"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(rect.left_bottom())
-            .show(ui.ctx(), |ui| {
-                egui::Frame::none()
-                    .fill(surface)
-                    .stroke(outline)
-                    .rounding(egui::Rounding {
-                        nw: 0.0,
-                        ne: 0.0,
-                        sw: radius::SM,
-                        se: radius::SM,
-                    })
-                    .inner_margin(egui::Margin::symmetric(4.0, 6.0))
-                    .show(ui, |ui| {
-                        ui.set_min_width(width - 8.0);
-                        ui.set_max_width(width - 8.0);
-
-                        if cores_snapshot.is_empty() {
-                            ui.label(
-                                egui::RichText::new("(no *.exe under core/)")
-                                    .color(color::ON_SURFACE_VARIANT),
-                            );
-                            return;
-                        }
-
-                        for name in &cores_snapshot {
-                            let selected = current.as_deref() == Some(name.as_str());
-                            let item_resp = ui.allocate_response(
-                                egui::vec2(ui.available_width(), 28.0),
-                                egui::Sense::click(),
-                            );
-                            let r = item_resp.rect;
-                            let p = ui.painter().clone();
-                            let item_bg = if selected {
-                                theme::with_alpha(color::PRIMARY, 0.14)
-                            } else if item_resp.hovered() {
-                                theme::with_alpha(color::ON_SURFACE, 0.06)
-                            } else {
-                                egui::Color32::TRANSPARENT
-                            };
-                            p.rect_filled(r, egui::Rounding::same(radius::XS), item_bg);
-
-                            let inner = r.shrink2(egui::vec2(8.0, 0.0));
-                            let cy = inner.center().y;
-                            let g = ui.fonts(|f| {
-                                f.layout_no_wrap(
-                                    name.clone(),
-                                    egui::FontId::proportional(13.5),
-                                    color::ON_SURFACE,
-                                )
-                            });
-                            p.galley(
-                                egui::pos2(inner.left(), cy - g.size().y * 0.5),
-                                g,
-                                color::ON_SURFACE,
-                            );
-
-                            if item_resp.clicked() {
-                                new_selected = Some(Some(name.clone()));
-                                close_requested = true;
-                            }
-                        }
+    let picked = popup_combo(
+        ui,
+        "core_combo_v1",
+        width,
+        32.0,
+        |ui, painter, inner, _content_right| {
+            let name_font = egui::FontId::proportional(13.5);
+            let (text, color_) = match current_label.as_deref() {
+                Some(name) => (name.to_string(), color::ON_SURFACE),
+                None => ("(none)".to_string(), color::ON_SURFACE_VARIANT),
+            };
+            let galley = ui.fonts(|f| f.layout_no_wrap(text, name_font, color_));
+            let center_y = inner.center().y;
+            painter.galley(
+                egui::pos2(inner.left(), center_y - galley.size().y * 0.5),
+                galley,
+                color_,
+            );
+        },
+        |ui| {
+            if cores_snapshot.is_empty() {
+                ui.label(
+                    egui::RichText::new("(no *.exe under core/)").color(color::ON_SURFACE_VARIANT),
+                );
+                return None;
+            }
+            for name in &cores_snapshot {
+                let selected = current.as_deref() == Some(name.as_str());
+                let clicked = popup_combo_row(ui, 28.0, selected, |ui, p, inner| {
+                    let cy = inner.center().y;
+                    let g = ui.fonts(|f| {
+                        f.layout_no_wrap(
+                            name.clone(),
+                            egui::FontId::proportional(13.5),
+                            color::ON_SURFACE,
+                        )
                     });
-            });
+                    p.galley(
+                        egui::pos2(inner.left(), cy - g.size().y * 0.5),
+                        g,
+                        color::ON_SURFACE,
+                    );
+                });
+                if clicked {
+                    return Some(Some(name.clone()));
+                }
+            }
+            None
+        },
+    );
 
-        let outside_click = ui.input(|i| {
-            i.pointer.any_click()
-                && i.pointer
-                    .interact_pos()
-                    .map(|p| !area.response.rect.contains(p) && !rect.contains(p))
-                    .unwrap_or(false)
-        });
-        if outside_click {
-            close_requested = true;
-        }
-    }
-
-    if let Some(sel) = new_selected {
+    if let Some(sel) = picked {
         if app.settings.selected_core != sel {
             app.settings.selected_core = sel;
             app.persist_settings();
         }
-    }
-    if close_requested {
-        ui.memory_mut(|m| m.close_popup());
     }
 }
 
@@ -876,6 +822,19 @@ fn run_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
         if let Some(err) = app.last_error.clone() {
             ui.add_space(8.0);
             banner(ui, &err, color::ERROR_CONTAINER, color::ERROR);
+        } else if let Some(info) = app.last_info.clone() {
+            // Success / informational banner — same shape as the error
+            // banner but tinted with the success palette. Previously
+            // `last_info` was set on Add/Update/Delete success but never
+            // rendered, so the user got no visible feedback for those
+            // actions outside the log card.
+            ui.add_space(8.0);
+            banner(
+                ui,
+                &info,
+                theme::with_alpha(color::SUCCESS, 0.18),
+                color::ON_SURFACE,
+            );
         }
 
         ui.add_space(14.0);

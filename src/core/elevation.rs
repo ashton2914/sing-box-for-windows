@@ -15,7 +15,6 @@
 //! and avoid a console flash.
 
 use std::io;
-use std::os::windows::ffi::OsStrExt;
 use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -28,11 +27,10 @@ use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken}
 use windows_sys::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
 use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
+use crate::core::win::{to_wide, CREATE_NO_WINDOW};
+
 /// `ERROR_CANCELLED` — UAC dialog dismissed by the user.
 const ERROR_CANCELLED: u32 = 1223;
-
-/// Suppress the conhost flash that would otherwise accompany `schtasks`.
-const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 /// Per-user scheduled-task name used for the silent admin promotion.
 /// Stable across upgrades. Stored in the user's task folder so it can be
@@ -45,7 +43,19 @@ const LEGACY_ADMIN_TASK_NAMES: &[&str] = &["sing-box-launcher-elevated"];
 
 /// True when the current process token has an elevated integrity level
 /// (i.e. is running as Administrator).
+///
+/// Cached after the first call: a process's integrity level is fixed at
+/// `CreateProcess` time and Windows offers no API to change it in
+/// place, so the answer is invariant for the lifetime of the process.
+/// The previous per-frame call hit `OpenProcessToken` +
+/// `GetTokenInformation` on every UI repaint.
 pub fn is_elevated() -> bool {
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(query_elevation)
+}
+
+fn query_elevation() -> bool {
     unsafe {
         let mut token: HANDLE = std::ptr::null_mut();
         if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
@@ -111,11 +121,6 @@ pub fn restart_as_admin(working_dir: &Path) -> io::Result<()> {
         }
     }
     Ok(())
-}
-
-/// Encode an `OsStr` to a NUL-terminated UTF-16 buffer.
-fn to_wide(s: &std::ffi::OsStr) -> Vec<u16> {
-    s.encode_wide().chain(std::iter::once(0)).collect()
 }
 
 /// Relaunch the launcher as a *standard user*, dropping the current

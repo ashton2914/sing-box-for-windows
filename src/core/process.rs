@@ -12,10 +12,8 @@ use anyhow::{anyhow, Context, Result};
 
 use crate::log_bus::LogEvent;
 
-/// CREATE_NO_WINDOW — prevents a black console window from flashing when
-/// spawning the sing-box child process under a GUI subsystem.
 #[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+use crate::core::win::CREATE_NO_WINDOW;
 
 /// Maximum number of stderr lines retained for the "last exit" error
 /// banner. Big enough to capture sing-box's standard config-error

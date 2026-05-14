@@ -14,7 +14,8 @@ pub fn open(path: &Path) -> Result<()> {
     {
         use std::os::windows::process::CommandExt;
         use std::process::Command;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+        use crate::core::win::CREATE_NO_WINDOW;
 
         if path.is_dir() {
             Command::new("explorer.exe")

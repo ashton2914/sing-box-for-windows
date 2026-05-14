@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
@@ -13,6 +14,11 @@ use crate::core::paths::Paths;
 use crate::core::process::ProcessHandle;
 use crate::core::tray::{self, TrayHandle};
 use crate::log_bus::LogEvent;
+
+/// Maximum number of log lines retained in the in-memory ring buffer.
+/// Older lines are evicted from the front (O(1) on `VecDeque`) once the
+/// buffer hits this limit.
+const LOG_BACKLOG_CAP: usize = 1000;
 
 /// Commands sent from the UI thread → background worker.
 pub enum BgCmd {
@@ -117,7 +123,7 @@ pub struct App {
     pub configs: Vec<ConfigEntry>,
     pub cores: Vec<String>,
 
-    pub logs: Vec<LogEvent>,
+    pub logs: VecDeque<LogEvent>,
     pub last_error: Option<String>,
     pub last_info: Option<String>,
 
@@ -184,7 +190,7 @@ impl App {
             proc,
             configs,
             cores,
-            logs: Vec::new(),
+            logs: VecDeque::with_capacity(LOG_BACKLOG_CAP),
             last_error: None,
             last_info: None,
             add_dialog: AddDialogState::new(),
@@ -410,11 +416,10 @@ impl App {
         while let Ok(ev) = self.bg_rx.try_recv() {
             match ev {
                 BgEvent::Log(le) => {
-                    self.logs.push(le);
-                    if self.logs.len() > 1000 {
-                        let drop_n = self.logs.len() - 1000;
-                        self.logs.drain(..drop_n);
+                    if self.logs.len() == LOG_BACKLOG_CAP {
+                        self.logs.pop_front();
                     }
+                    self.logs.push_back(le);
                 }
                 BgEvent::AddDone(Ok(slug)) => {
                     self.add_dialog.busy = false;
@@ -520,7 +525,16 @@ impl eframe::App for App {
             crate::ui::show(ui, self);
         });
 
-        ctx.request_repaint_after(Duration::from_millis(750));
+        // No unconditional periodic repaint:
+        //   * the log forwarder, the bg worker, the process exit watcher
+        //     and the IME swallower all already call `ctx.request_repaint()`
+        //     when they have something to show.
+        //   * with the 750ms timer the app would burn one full layout pass
+        //     per ~1.3s while completely idle, even with the window hidden
+        //     to the tray.
+        // The (rare) status→stopped transition is still picked up the next
+        // frame after `take_exit_error` posts an error, or as soon as the
+        // user moves the cursor over the window.
     }
 }
 
@@ -582,9 +596,7 @@ fn background_loop(
                         );
                         if last_auto_run.elapsed() >= interval {
                             // Only auto-update remote entries.
-                            if let Some(entry) =
-                                paths.list_configs().into_iter().find(|e| e.slug == slug)
-                            {
+                            if let Some(entry) = paths.load_entry(&slug) {
                                 if matches!(entry.metadata.source, Source::Remote { .. }) {
                                     let res = updater::refresh_entry(&entry, &log_tx)
                                         .map(|_| slug.clone())
@@ -603,12 +615,17 @@ fn background_loop(
     }
 }
 
+/// Look up a single `ConfigEntry` by slug, or return a uniform
+/// "not found" error string. Centralised here so the `update`, `edit`
+/// and `delete` paths all share the same lookup + error wording.
+fn lookup_entry(paths: &Paths, slug: &str) -> Result<ConfigEntry, String> {
+    paths
+        .load_entry(slug)
+        .ok_or_else(|| format!("config '{slug}' not found"))
+}
+
 fn run_update_one(paths: &Paths, slug: &str, log_tx: &Sender<LogEvent>) -> Result<String, String> {
-    let entry = paths
-        .list_configs()
-        .into_iter()
-        .find(|e| e.slug == slug)
-        .ok_or_else(|| format!("config '{slug}' not found"))?;
+    let entry = lookup_entry(paths, slug)?;
     updater::refresh_entry(&entry, log_tx)
         .map(|_| slug.to_string())
         .map_err(|e| e.to_string())
@@ -620,22 +637,14 @@ fn run_edit(
     spec: &NewConfigSpec,
     log_tx: &Sender<LogEvent>,
 ) -> Result<String, String> {
-    let entry = paths
-        .list_configs()
-        .into_iter()
-        .find(|e| e.slug == slug)
-        .ok_or_else(|| format!("config '{slug}' not found"))?;
+    let entry = lookup_entry(paths, slug)?;
     updater::edit_entry(&entry, &spec.name, &spec.source, log_tx)
         .map(|_| slug.to_string())
         .map_err(|e| e.to_string())
 }
 
 fn run_delete(paths: &Paths, slug: &str, log_tx: &Sender<LogEvent>) -> Result<String, String> {
-    let entry = paths
-        .list_configs()
-        .into_iter()
-        .find(|e| e.slug == slug)
-        .ok_or_else(|| format!("config '{slug}' not found"))?;
+    let entry = lookup_entry(paths, slug)?;
     updater::delete_entry(&entry, log_tx)
         .map(|_| slug.to_string())
         .map_err(|e| e.to_string())
