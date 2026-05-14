@@ -32,7 +32,7 @@ use eframe::egui::{
 
 use crate::theme::{self, color};
 
-const TITLEBAR_HEIGHT: f32 = 36.0;
+const TITLEBAR_HEIGHT: f32 = 44.0;
 const BUTTON_WIDTH: f32 = 46.0;
 // Wide enough to be grabbable without precision aiming. Windows 11's
 // own resize border is ~8–12 px once you count the invisible "ghost"
@@ -64,52 +64,14 @@ pub fn titlebar(ctx: &Context) {
         .show(ctx, |ui| {
             let rect = ui.max_rect();
             let painter = ui.painter().clone();
-
-            // ----- App icon + title (left) -----
-            let icon_side = 16.0;
-            let icon_left = rect.left() + 12.0;
-            let icon_rect = Rect::from_min_size(
-                egui::pos2(icon_left, rect.center().y - icon_side * 0.5),
-                Vec2::splat(icon_side),
-            );
-            let icon = app_icon_texture(ctx);
-            painter.image(
-                icon.id(),
-                icon_rect,
-                Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                Color32::WHITE,
-            );
-
-            let title_font = FontId::proportional(13.0);
-            let title_color = color::ON_SURFACE_VARIANT;
-            let title_galley = ui.fonts(|f| {
-                f.layout_no_wrap(
-                    crate::APP_TITLE.to_string(),
-                    title_font.clone(),
-                    title_color,
-                )
-            });
-            let title_w = title_galley.size().x;
-            let title_left = icon_rect.right() + 8.0;
-            painter.galley(
-                egui::pos2(title_left, rect.center().y - title_galley.size().y * 0.5),
-                title_galley,
-                title_color,
-            );
-
             let buttons_w = BUTTON_WIDTH * 3.0;
-            let drag_left = title_left + title_w + 12.0;
-            let drag_right = rect.right() - buttons_w;
+            let strip_left = rect.right() - buttons_w;
 
-            // ----- Drag region (middle) -----
-            // Click-and-drag to move; double-click to toggle maximise.
-            // We allocate from the area *after* the title text up to
-            // where the buttons start, so all three regions stay hit-
-            // testable independently.
-            if drag_right > drag_left {
+            // ----- Drag region (everything except the fixed window buttons) -----
+            if strip_left > rect.left() {
                 let drag_rect = Rect::from_min_max(
-                    egui::pos2(drag_left, rect.top()),
-                    egui::pos2(drag_right, rect.bottom()),
+                    egui::pos2(rect.left(), rect.top()),
+                    egui::pos2(strip_left, rect.bottom()),
                 );
                 let drag = ui.interact(
                     drag_rect,
@@ -125,8 +87,26 @@ pub fn titlebar(ctx: &Context) {
                 }
             }
 
+            // ----- App title (left) -----
+            let title_font = FontId::proportional(17.0);
+            let title_color = color::ON_SURFACE;
+            let title_galley = ui.fonts(|f| {
+                f.layout_no_wrap(crate::APP_TITLE.to_string(), title_font.clone(), title_color)
+            });
+            let title_y = rect.center().y - title_galley.size().y * 0.5 - 0.5;
+            let title_left = rect.left() + 18.0;
+            painter.galley(
+                egui::pos2(title_left, title_y),
+                title_galley.clone(),
+                title_color,
+            );
+            painter.galley(
+                egui::pos2(title_left + 0.45, title_y),
+                title_galley,
+                title_color,
+            );
+
             // ----- Window buttons (right, fixed strip) -----
-            let strip_left = rect.right() - buttons_w;
             let strip_rect = Rect::from_min_max(
                 egui::pos2(strip_left, rect.top()),
                 egui::pos2(rect.right(), rect.bottom()),
@@ -154,21 +134,6 @@ pub fn titlebar(ctx: &Context) {
                 ctx.send_viewport_cmd(ViewportCommand::Close);
             }
         });
-}
-
-/// Lazily upload the embedded RGBA window icon as an egui texture so
-/// the title bar can paint it next to the app name. Stored in egui's
-/// per-context temp memory so it's only uploaded once per process.
-fn app_icon_texture(ctx: &Context) -> egui::TextureHandle {
-    let id = egui::Id::new("chrome::app_icon");
-    if let Some(h) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
-        return h;
-    }
-    let side = crate::ICON_SIDE as usize;
-    let img = egui::ColorImage::from_rgba_unmultiplied([side, side], crate::ICON_RGBA);
-    let h = ctx.load_texture("app_icon", img, egui::TextureOptions::LINEAR);
-    ctx.data_mut(|d| d.insert_temp(id, h.clone()));
-    h
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
