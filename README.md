@@ -16,7 +16,7 @@ This project provides the launcher only. It does not bundle or redistribute the 
 
 ## Quick Start
 
-1. Download `sing-box-for-windows-v0.1.0-windows-x86_64.exe` from a release.
+1. Download `sing-box-for-windows-v<version>-windows-x86_64.exe` from a release.
 2. Place it in any writable folder.
 3. Run the executable once. The app creates the required runtime folders automatically.
 4. Put your `sing-box` Windows core executable into `core/`.
@@ -45,7 +45,7 @@ The optional `tools/` folder is created only when the AppContainer loopback util
 Artifacts are written to:
 
 ```text
-dist\v0.1.0\
+dist\v<version>\
 ```
 
 The script builds Windows x86_64 and ARM64 targets. ARM64 builds require a C compiler environment such as Visual Studio Build Tools with ARM64 C++ tools, or LLVM/clang on `PATH`.

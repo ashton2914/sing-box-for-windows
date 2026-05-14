@@ -159,6 +159,8 @@ pub struct App {
     /// HWND of the real eframe root window, captured from `Frame` on the
     /// first update. The tray worker uses this for direct Win32 Show/Hide.
     main_hwnd: Option<usize>,
+    /// One-shot startup hide requested by `settings.silent_start`.
+    pending_initial_silent_hide: bool,
 }
 
 impl App {
@@ -169,6 +171,7 @@ impl App {
 
         let configs = paths.list_configs();
         let cores = paths.list_cores();
+        let pending_initial_silent_hide = settings.silent_start;
 
         let (bg_tx, bg_cmd_rx) = channel::<BgCmd>();
         let (bg_event_tx, bg_rx) = channel::<BgEvent>();
@@ -219,6 +222,7 @@ impl App {
             bg_rx,
             tray: None,
             main_hwnd: None,
+            pending_initial_silent_hide,
         };
 
         // Drop a stale selection if its folder is gone.
@@ -518,6 +522,20 @@ impl App {
             }
         }
     }
+
+    fn apply_initial_silent_hide(&mut self, ctx: &egui::Context) {
+        if !self.pending_initial_silent_hide || self.main_hwnd.is_none() {
+            return;
+        }
+        self.pending_initial_silent_hide = false;
+
+        if let (Some(tray), Some(hwnd)) = (self.tray.as_ref(), self.main_hwnd) {
+            tray.hide_main_window(hwnd);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        } else {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -557,6 +575,7 @@ impl eframe::App for App {
             }
         }
 
+        self.apply_initial_silent_hide(ctx);
         self.drain_events();
         self.handle_close_request(ctx);
 

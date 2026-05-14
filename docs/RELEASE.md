@@ -10,10 +10,10 @@ The build script writes artifacts to:
 dist\v<version>\
 ```
 
-For version `0.1.0`, the output directory is:
+The output directory uses the version from `Cargo.toml`:
 
 ```text
-dist\v0.1.0\
+dist\v<version>\
 ```
 
 ## Build Command
@@ -34,8 +34,8 @@ aarch64-pc-windows-msvc
 Expected artifacts:
 
 ```text
-sing-box-for-windows-v0.1.0-windows-x86_64.exe
-sing-box-for-windows-v0.1.0-windows-arm64.exe
+sing-box-for-windows-v<version>-windows-x86_64.exe
+sing-box-for-windows-v<version>-windows-arm64.exe
 SHA256SUMS.txt
 ```
 
