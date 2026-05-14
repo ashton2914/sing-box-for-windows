@@ -93,6 +93,12 @@ pub fn cursor_pos() -> Option<WindowPoint> {
     })
 }
 
+pub fn left_mouse_button_down() -> bool {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
+
+    unsafe { GetAsyncKeyState(VK_LBUTTON as i32) < 0 }
+}
+
 pub fn window_pos(hwnd: usize) -> Option<WindowPoint> {
     window_rect(hwnd).map(|rect| WindowPoint {
         x: rect.left,

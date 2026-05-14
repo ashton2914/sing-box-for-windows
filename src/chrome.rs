@@ -34,16 +34,11 @@ use crate::theme::{self, color};
 
 const TITLEBAR_HEIGHT: f32 = 44.0;
 const BUTTON_WIDTH: f32 = 46.0;
-// Wide enough to be grabbable without precision aiming. Windows 11's
-// own resize border is ~8–12 px once you count the invisible "ghost"
-// frame outside the visible window; with `decorated:false` we lose
-// that outside slice entirely, so we have to make the inside slice
-// generous instead. 10 px keeps the cursor flip predictable while
-// still staying clear of the cards' content (ui.rs reserves 20 px of
-// dead space on every side, and the bottom page-margin is 12 px, all
-// comfortably outside this strip).
+// Wide enough to be grabbable without precision aiming, but still narrow
+// enough that normal title-bar drags don't accidentally hit a resize area.
 const RESIZE_EDGE: f32 = 10.0;
-const RESIZE_CORNER: f32 = 22.0;
+const RESIZE_TOP_EDGE: f32 = 6.0;
+const RESIZE_CORNER: f32 = 16.0;
 // Visible window-edge frame radius. Matches the Win11 DWM corner
 // radius requested in `core::win::enable_rounded_corners`, so the
 // painted outline traces the actual rounded silhouette instead of
@@ -406,7 +401,7 @@ pub fn resize_handles(ctx: &Context, main_hwnd: Option<usize>) {
         "n",
         Rect::from_min_max(
             egui::pos2(screen.left() + c, screen.top()),
-            egui::pos2(top_right_limit, screen.top() + e),
+            egui::pos2(top_right_limit, screen.top() + RESIZE_TOP_EDGE),
         ),
         ResizeDirection::North,
         CursorIcon::ResizeNorth,
@@ -509,16 +504,15 @@ fn handle_resize_windows(
     resize_id: egui::Id,
 ) {
     let state_id = resize_id.with("window_resize_state");
-    let (primary_pressed, primary_down, pointer_pos, pointer_delta) = ctx.input(|i| {
+    let (primary_pressed, primary_down, pointer_pos) = ctx.input(|i| {
         (
             i.pointer.button_pressed(egui::PointerButton::Primary),
             i.pointer.button_down(egui::PointerButton::Primary),
             i.pointer.interact_pos().or(i.pointer.hover_pos()),
-            i.pointer.delta(),
         )
     });
 
-    if !primary_down {
+    if !primary_down || !crate::core::win::left_mouse_button_down() {
         clear_resize_state(ui, state_id);
         return;
     }
@@ -528,9 +522,7 @@ fn handle_resize_windows(
         .flatten();
 
     let pointer_in_resize_region = pointer_pos.is_some_and(|pos| rect.contains(pos));
-    let should_start = state.is_none()
-        && pointer_in_resize_region
-        && (primary_pressed || pointer_delta.length_sq() > 0.0);
+    let should_start = state.is_none() && primary_pressed && pointer_in_resize_region;
 
     let state = if should_start {
         let state = crate::core::win::cursor_pos()
