@@ -305,7 +305,7 @@ unsafe fn add_tray_icon(hwnd: HWND) -> bool {
     nid.hIcon = hicon;
 
     // Tooltip — szTip is a fixed [u16; 128] array, NUL-terminated.
-    let tip = wide("sing-box");
+    let tip = wide(crate::APP_TITLE);
     let n = tip.len().min(nid.szTip.len());
     nid.szTip[..n].copy_from_slice(&tip[..n]);
 
@@ -445,7 +445,7 @@ unsafe extern "system" fn enum_main_window_proc(hwnd: HWND, lparam: LPARAM) -> B
         return 1;
     }
     let title = String::from_utf16_lossy(&title[..copied as usize]);
-    if title == "sing-box" {
+    if title == crate::APP_TITLE {
         search.found = Some(hwnd as usize);
         return 0;
     }

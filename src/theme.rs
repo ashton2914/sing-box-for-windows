@@ -181,6 +181,24 @@ pub fn with_alpha(c: Color32, alpha: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
 }
 
+/// Composite `top` (with alpha) over solid `base`, returning the
+/// resulting opaque color. Use this when you need an opaque value for
+/// a state-layer blend (e.g. to paint underneath a glyph that itself
+/// will mask another shape).
+pub fn blend_over(base: Color32, top: Color32, top_alpha: f32) -> Color32 {
+    let a = top_alpha.clamp(0.0, 1.0);
+    let blend = |b: u8, t: u8| {
+        ((1.0 - a) * b as f32 + a * t as f32)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    Color32::from_rgb(
+        blend(base.r(), top.r()),
+        blend(base.g(), top.g()),
+        blend(base.b(), top.b()),
+    )
+}
+
 // -------------------------------------------------------------------------
 // Component helpers
 // -------------------------------------------------------------------------
@@ -771,10 +789,17 @@ pub mod modal {
 /// The standard modal frame: SURFACE_CONTAINER_HIGH fill, LG rounding,
 /// OUTLINE_VARIANT 1dp stroke, deep soft shadow.
 pub fn modal_frame() -> egui::Frame {
+    modal_frame_with_margin(modal::INNER_MARGIN)
+}
+
+/// Modal frame with caller-controlled inner margin. Kept separate from
+/// [`modal_frame`] so small viewport dialogs can reduce padding without
+/// changing the canonical look of normal confirmation/input dialogs.
+pub fn modal_frame_with_margin(inner_margin: f32) -> egui::Frame {
     egui::Frame::none()
         .fill(color::SURFACE_CONTAINER_HIGH)
         .rounding(Rounding::same(radius::LG))
-        .inner_margin(Margin::same(modal::INNER_MARGIN))
+        .inner_margin(Margin::same(inner_margin))
         .stroke(Stroke::new(1.0, color::OUTLINE_VARIANT))
         .shadow(egui::epaint::Shadow {
             offset: Vec2::new(0.0, 8.0),
@@ -844,6 +869,71 @@ pub fn modal_dialog<R>(
                     ui.add_space(modal::HEADER_GAP);
 
                     add_contents(ui)
+                })
+                .inner
+        });
+
+    if closable && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        close_requested = true;
+    }
+
+    ModalResult {
+        close_requested,
+        inner: area.inner,
+    }
+}
+
+/// Same chrome/behavior as [`modal_dialog`], but the caller controls the
+/// maximum content height. Use for long, scrollable modal bodies that must
+/// track the current viewport size exactly.
+pub fn modal_dialog_sized<R>(
+    ctx: &egui::Context,
+    id: &str,
+    title: &str,
+    width: f32,
+    content_max_height: f32,
+    frame_inner_margin: f32,
+    closable: bool,
+    add_contents: impl FnOnce(&mut egui::Ui, f32) -> R,
+) -> ModalResult<R> {
+    let screen = ctx.screen_rect();
+    egui::Area::new(egui::Id::new((id, "backdrop")))
+        .order(egui::Order::Middle)
+        .fixed_pos(screen.left_top())
+        .show(ctx, |ui| {
+            let resp = ui.allocate_response(screen.size(), egui::Sense::click());
+            ui.painter().rect_filled(
+                resp.rect,
+                Rounding::ZERO,
+                Color32::from_black_alpha(modal::BACKDROP_ALPHA),
+            );
+        });
+
+    let mut close_requested = false;
+    let area = egui::Area::new(egui::Id::new(id))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+        .show(ctx, |ui| {
+            modal_frame_with_margin(frame_inner_margin)
+                .show(ui, |ui| {
+                    ui.set_width(width);
+
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(title)
+                                .color(color::ON_SURFACE)
+                                .size(modal::TITLE_FONT)
+                                .strong(),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if closable && close_button(ui).on_hover_text("Close").clicked() {
+                                close_requested = true;
+                            }
+                        });
+                    });
+                    ui.add_space(modal::HEADER_GAP);
+
+                    add_contents(ui, content_max_height)
                 })
                 .inner
         });

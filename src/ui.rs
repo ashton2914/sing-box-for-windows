@@ -6,13 +6,13 @@ use crate::core::shell;
 use crate::theme::{self, color, radius};
 
 pub fn show(ui: &mut egui::Ui, app: &mut App) {
-    // The page cards must always be the window width minus fixed insets.
-    // Do not derive this from any nested `available_width`: ScrollArea can
-    // change that value when its overflow state changes, which is exactly
-    // what made the cards jump when toggling the log panel.
-    const PAGE_LEFT: f32 = 20.0;
-    const PAGE_RIGHT: f32 = 40.0; // includes the thin scrollbar gutter
-    let card_width = (ui.ctx().screen_rect().width() - PAGE_LEFT - PAGE_RIGHT).max(240.0);
+    // Keep the stacked page cards visually centered in the actual
+    // CentralPanel viewport. This deliberately uses the parent UI width
+    // instead of `ctx.screen_rect().width()`: the screen rect is a window
+    // coordinate, while ScrollArea/content layout is panel-local. Mixing
+    // those coordinate systems is what made the right inset look tighter
+    // after the main scrollbar was hidden.
+    const PAGE_INSET: f32 = 20.0;
 
     egui::Frame::none()
         .inner_margin(egui::Margin {
@@ -23,14 +23,17 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
         })
         .show(ui, |ui| {
             ui.spacing_mut().scroll.floating = true;
+            let page_width = ui.available_width();
+            let card_width = (page_width - PAGE_INSET * 2.0).max(240.0);
 
             egui::ScrollArea::vertical()
                 .auto_shrink([false; 2])
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                 .show(ui, |ui| {
                     egui::Frame::none()
                         .inner_margin(egui::Margin {
-                            left: PAGE_LEFT,
-                            right: PAGE_RIGHT,
+                            left: PAGE_INSET,
+                            right: PAGE_INSET,
                             top: 0.0,
                             bottom: 12.0,
                         })
@@ -47,6 +50,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
     add_config_modal(ui.ctx(), app);
     delete_confirm_modal(ui.ctx(), app);
     destroy_confirm_modal(ui.ctx(), app);
+    about_modal(ui.ctx(), app);
 }
 
 // ---------- Config card ----------
@@ -668,6 +672,62 @@ fn settings_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
             if s_changed {
                 app.persist_settings();
             }
+
+            // ----- AppContainer loopback utility -----
+            // Surfaced here because, like the other APP toggles, it
+            // affects how Windows treats this proxy launcher's traffic
+            // scope (UWP / Edge / Store apps need an exemption to
+            // reach a local proxy at all). The button hands off to a
+            // background worker that checks the well-known install
+            // path, downloads Telerik's installer if needed, then
+            // shells out to whichever copy is on disk \u2014 the binary
+            // carries its own UAC manifest so a prompt fires.
+            //
+            // Network I/O lives on the worker thread; this row only
+            // sends a `BgCmd::OpenLoopback` and disables the button
+            // until the corresponding `BgEvent::LoopbackDone` lands
+            // (`app.loopback_busy`).
+            #[cfg(windows)]
+            {
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    let label = ui.label(theme::setting_label(crate::core::loopback::DISPLAY_NAME));
+                    label.on_hover_text(crate::core::loopback::HOVER_TEXT);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Keep this as a compact, low-emphasis row action
+                        // rather than a full tonal pill. The fixed width
+                        // still prevents right-to-left reflow when the
+                        // label flips "Open" ↔ "Opening…".
+                        let label = if app.loopback_busy {
+                            "Opening\u{2026}"
+                        } else {
+                            "Open"
+                        };
+                        let loopback_button = egui::Button::new(
+                            egui::RichText::new(label)
+                                .color(color::ON_SURFACE)
+                                .size(12.5),
+                        )
+                        .fill(color::SURFACE_CONTAINER_HIGH)
+                        .rounding(egui::Rounding::same(radius::FULL))
+                        .min_size(egui::Vec2::new(76.0, 24.0))
+                        .stroke(egui::Stroke::new(1.0, color::OUTLINE_VARIANT));
+                        let resp = ui.add(loopback_button).on_hover_text(
+                            "Launch EnableLoopback.exe (downloads from Telerik on first use; UAC \
+                             will prompt)",
+                        );
+                        if resp.clicked() && !app.loopback_busy {
+                            app.loopback_busy = true;
+                            app.last_error = None;
+                            app.last_info = Some(format!(
+                                "Preparing {}\u{2026}",
+                                crate::core::loopback::DISPLAY_NAME
+                            ));
+                            let _ = app.bg_tx.send(BgCmd::OpenLoopback);
+                        }
+                    });
+                });
+            }
         });
 
         ui.add_space(12.0);
@@ -722,6 +782,43 @@ fn settings_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
                 {
                     app.destroy_confirm_open = true;
                 }
+            });
+        });
+
+        // ---------- ABOUT ----------
+        ui.add_space(12.0);
+        subtle_divider(ui);
+        ui.add_space(10.0);
+        theme::subsection_title(ui, "ABOUT");
+        ui.add_space(2.0);
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.label(theme::setting_label("Version"));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new(env!("CARGO_PKG_VERSION")).color(color::ON_SURFACE),
+                    );
+                });
+            });
+            ui.horizontal(|ui| {
+                ui.label(theme::setting_label("Copyright"));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new("© 2026 ashton2914").color(color::ON_SURFACE));
+                });
+            });
+            ui.horizontal(|ui| {
+                ui.label(theme::setting_label("License"));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(
+                            theme::tonal_button("View license & disclaimer")
+                                .min_size(egui::Vec2::new(180.0, 28.0)),
+                        )
+                        .clicked()
+                    {
+                        app.about_open = true;
+                    }
+                });
             });
         });
     });
@@ -935,17 +1032,26 @@ fn status_text_block(ui: &mut egui::Ui, status_text: &str, status_color: egui::C
 // ---------- Helpers ----------
 
 fn banner(ui: &mut egui::Ui, text: &str, bg: egui::Color32, fg: egui::Color32) {
+    // Match the log card's outer width: both panels sit in the same
+    // run_card column, so the banner should always span the full
+    // available width regardless of how short the message is.
+    // Otherwise short errors render as a narrow blob that visually
+    // detaches from the log frame below.
+    const HORIZONTAL_PAD: f32 = 12.0;
+    let inner_width = (ui.available_width() - HORIZONTAL_PAD * 2.0).max(0.0);
     egui::Frame::none()
         .fill(bg)
         .rounding(egui::Rounding::same(radius::MD))
         .inner_margin(egui::Margin {
-            left: 12.0,
-            right: 12.0,
+            left: HORIZONTAL_PAD,
+            right: HORIZONTAL_PAD,
             top: 8.0,
             bottom: 8.0,
         })
         .show(ui, |ui| {
-            ui.label(egui::RichText::new(text).color(fg));
+            ui.set_min_width(inner_width);
+            ui.set_max_width(inner_width);
+            ui.add(egui::Label::new(egui::RichText::new(text).color(fg)).wrap());
         });
 }
 
@@ -1269,5 +1375,181 @@ fn destroy_confirm_modal(ctx: &egui::Context, app: &mut App) {
     );
     if result.close_requested {
         app.destroy_confirm_open = false;
+    }
+}
+
+// ---------- About / license modal ----------
+//
+// Embeds the canonical GPLv3 text at compile time (see the `LICENSE`
+// file at the workspace root) so the dialog is fully self-contained
+// — no extra files required next to the .exe at runtime.
+//
+// The dialog also carries an explicit "runtime components disclaimer"
+// that makes two facts unambiguous to any reader:
+//   1. This launcher does NOT bundle, redistribute, or otherwise
+//      provide the `sing-box` core or any other runtime-required
+//      component. Users acquire those on their own.
+//   2. `sing-box` is a separate upstream open-source project authored
+//      by third parties; its license, copyright, and any legal risk
+//      arising from its use belong to its respective authors and end
+//      users. The launcher's author makes no warranty about the
+//      legality of using sing-box in any jurisdiction (notably,
+//      mainland China carries known regulatory risk for proxy tools).
+//
+// Surfacing both facts inside the app, behind a button labelled
+// "View license & disclaimer", is the conservative reading of "best
+// practice" the user asked for: a) the GPL §17 short notice + full
+// text are visible from the running program (satisfying the GPL's
+// "interactive" notice expectations), and b) the upstream-attribution
+// + disclaimer is shown together so a reader cannot miss it.
+const LICENSE_TEXT: &str = include_str!("../LICENSE");
+
+fn about_modal(ctx: &egui::Context, app: &mut App) {
+    if !app.about_open {
+        return;
+    }
+
+    // Size the About dialog from the live viewport every frame. The
+    // dialog follows the outer window; if the window becomes too short
+    // for the text, only the body scrolls while the Close button remains
+    // pinned at the bottom. These are exact layout-budget values rather
+    // than a guessed "screen minus N" so the outer frame never outgrows
+    // the current viewport at the minimum window size.
+    let screen = ctx.screen_rect();
+    let compact = screen.width() < 580.0 || screen.height() < 620.0;
+    let edge_gap = if compact { 8.0 } else { 16.0 };
+    let frame_pad = if compact { 8.0 } else { 16.0 };
+    let modal_w = (screen.width() - edge_gap * 2.0 - frame_pad * 2.0).max(0.0);
+    let chrome_h = 28.0  // title row, including the close icon hit target
+        + theme::modal::HEADER_GAP
+        + 14.0           // body/footer gap below the scroll area
+        + 28.0           // Close button row
+        + frame_pad * 2.0;
+    let body_max_h = (screen.height() - edge_gap * 2.0 - chrome_h).max(48.0);
+
+    let result = theme::modal_dialog_sized(
+        ctx,
+        "about_modal",
+        "About",
+        modal_w,
+        body_max_h,
+        frame_pad,
+        true,
+        |ui, body_max_h| {
+            // ----- Scrollable body -----
+            // All variable-height content (header, disclaimer, GPL
+            // short notice, full license box) lives inside this outer
+            // scroll. The Close button is rendered AFTER the scroll
+            // area so it stays pinned at the modal's bottom and is
+            // always reachable regardless of how the user scrolls.
+            egui::ScrollArea::vertical()
+                .id_source("about_body_scroll")
+                .auto_shrink([false, true])
+                .max_height(body_max_h)
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} v{}",
+                            crate::APP_TITLE,
+                            env!("CARGO_PKG_VERSION")
+                        ))
+                        .color(color::ON_SURFACE)
+                        .strong()
+                        .size(15.0),
+                    );
+                    ui.label(
+                        egui::RichText::new("Copyright © 2026 ashton2914")
+                            .color(color::ON_SURFACE_VARIANT),
+                    );
+
+                    ui.add_space(10.0);
+
+                    // -- Runtime-components / upstream disclaimer --
+                    field_label(ui, "RUNTIME COMPONENTS & UPSTREAM DISCLAIMER");
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "This program is a launcher / manager for sing-box on Windows. \
+                             It does NOT bundle, redistribute, or provide the sing-box core \
+                             binary or any other runtime-required component — users must \
+                             obtain those components themselves.\n\n\
+                             sing-box is an independent third-party open-source project; its \
+                             source, license, and copyright belong to its respective authors. \
+                             The use of sing-box may carry legal risk in certain jurisdictions \
+                             (including, but not limited to, mainland China). The author of \
+                             this launcher makes no warranty regarding the legality of using \
+                             sing-box in any jurisdiction; users are solely responsible for \
+                             complying with all applicable laws and regulations.",
+                        )
+                        .color(color::ON_SURFACE),
+                    );
+
+                    ui.add_space(14.0);
+
+                    // -- GPLv3 short notice -----------------------
+                    field_label(ui, "LICENSE — GNU GENERAL PUBLIC LICENSE v3 (or later)");
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "This program is free software: you can redistribute it and/or \
+                             modify it under the terms of the GNU General Public License as \
+                             published by the Free Software Foundation, either version 3 of \
+                             the License, or (at your option) any later version.\n\n\
+                             This program is distributed in the hope that it will be useful, \
+                             but WITHOUT ANY WARRANTY; without even the implied warranty of \
+                             MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the \
+                             GNU General Public License for more details.",
+                        )
+                        .color(color::ON_SURFACE),
+                    );
+
+                    ui.add_space(8.0);
+
+                    // -- Full GPLv3 text in a compact monospace box.
+                    // Its own ScrollArea so the user can browse the
+                    // 35KB license without dragging the outer scroll
+                    // hundreds of pixels. The inner area's height is
+                    // intentionally short to keep the overall modal
+                    // tidy.
+                    egui::Frame::none()
+                        .fill(color::SURFACE_CONTAINER_LOWEST)
+                        .rounding(egui::Rounding::same(radius::MD))
+                        .inner_margin(egui::Margin::same(10.0))
+                        .show(ui, |ui| {
+                            let inner_width = (ui.available_width()).max(0.0);
+                            ui.set_min_width(inner_width);
+                            ui.set_max_width(inner_width);
+                            egui::ScrollArea::vertical()
+                                .auto_shrink([false; 2])
+                                .max_height(180.0)
+                                .id_source("about_license_scroll")
+                                .show(ui, |ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(LICENSE_TEXT)
+                                                .color(color::ON_SURFACE_VARIANT)
+                                                .monospace()
+                                                .size(11.5),
+                                        )
+                                        .wrap(),
+                                    );
+                                });
+                        });
+                });
+
+            ui.add_space(14.0);
+
+            // Close button is OUTSIDE the scroll area on purpose: the
+            // user must always have a one-click dismiss path even on
+            // tiny windows where the body is heavily scrolled.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.add(theme::tonal_button("Close")).clicked() {
+                    app.about_open = false;
+                }
+            });
+        },
+    );
+    if result.close_requested {
+        app.about_open = false;
     }
 }

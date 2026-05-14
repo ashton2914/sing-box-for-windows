@@ -3,6 +3,8 @@ name = "sing-box-for-windows"
 version = "0.0.2"
 edition = "2021"
 description = "Lightweight sing-box launcher for Windows"
+authors = ["ashton2914"]
+license = "GPL-3.0-or-later"
 build = "build.rs"
 autobins = false
 
@@ -24,6 +26,7 @@ rfd = { version = "0.14", default-features = false }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_Security",
     "Win32_System_LibraryLoader",

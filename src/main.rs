@@ -7,6 +7,7 @@
 #![windows_subsystem = "windows"]
 
 mod app;
+mod chrome;
 mod config;
 mod core;
 mod log_bus;
@@ -17,8 +18,9 @@ use eframe::egui;
 
 /// Embedded raw RGBA bytes for the 256x256 window icon.
 /// The build script rasterizes `assets/icon.svg` into `$OUT_DIR/icon.rgba`.
-const ICON_RGBA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/icon.rgba"));
-const ICON_SIDE: u32 = 256;
+pub const ICON_RGBA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/icon.rgba"));
+pub const ICON_SIDE: u32 = 256;
+pub const APP_TITLE: &str = "sing-box for Windows";
 
 fn load_icon() -> egui::IconData {
     egui::IconData {
@@ -59,16 +61,26 @@ fn main() -> eframe::Result<()> {
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([620.0, 720.0])
-            .with_min_inner_size([520.0, 560.0])
-            .with_title("sing-box")
+            // The About / license dialog contains legal text that must
+            // remain readable. A too-small minimum window forces that
+            // dialog into an awkward clipped layout, so keep the app's
+            // minimum viewport at a size where the modal can breathe.
+            .with_inner_size([720.0, 860.0])
+            .with_min_inner_size([700.0, 840.0])
+            .with_title(APP_TITLE)
             .with_icon(load_icon())
+            // Drop the OS title bar / window frame so the launcher
+            // reads as one continuous Material surface from edge to
+            // edge. We paint our own title bar and edge resize handles
+            // in `crate::chrome`.
+            .with_decorations(false)
+            .with_resizable(true)
             .with_visible(!startup_settings.silent_start),
         ..Default::default()
     };
 
     eframe::run_native(
-        "sing-box",
+        APP_TITLE,
         native_options,
         Box::new(|cc| {
             setup_fonts(&cc.egui_ctx);

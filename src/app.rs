@@ -23,10 +23,17 @@ const LOG_BACKLOG_CAP: usize = 1000;
 /// Commands sent from the UI thread → background worker.
 pub enum BgCmd {
     AddConfig(NewConfigSpec),
-    EditConfig { slug: String, spec: NewConfigSpec },
+    EditConfig {
+        slug: String,
+        spec: NewConfigSpec,
+    },
     UpdateConfig(String),
     DeleteConfig(String),
     SaveSettings(Settings),
+    /// Download (if missing) and launch Telerik's AppContainer
+    /// Loopback Utility. Network I/O — must run off the UI thread.
+    #[cfg(windows)]
+    OpenLoopback,
     Shutdown,
 }
 
@@ -38,6 +45,8 @@ pub enum BgEvent {
     UpdateDone(Result<String, String>),
     DeleteDone(Result<String, String>),
     SettingsSaved,
+    #[cfg(windows)]
+    LoopbackDone(Result<(), String>),
 }
 
 /// Add-config dialog inputs.
@@ -127,11 +136,18 @@ pub struct App {
     pub last_error: Option<String>,
     pub last_info: Option<String>,
 
+    /// True while the loopback-utility worker is downloading or
+    /// launching the Telerik installer. Drives the Settings button's
+    /// disabled state to prevent stacked clicks.
+    pub loopback_busy: bool,
+
     pub add_dialog: AddDialogState,
     /// `Some(slug)` while the delete confirmation modal is open.
     pub delete_confirm: Option<String>,
     /// Confirm modal for destroying the working directory.
     pub destroy_confirm_open: bool,
+    /// About / license dialog open state.
+    pub about_open: bool,
 
     pub bg_tx: Sender<BgCmd>,
     pub log_tx: Sender<LogEvent>,
@@ -193,9 +209,11 @@ impl App {
             logs: VecDeque::with_capacity(LOG_BACKLOG_CAP),
             last_error: None,
             last_info: None,
+            loopback_busy: false,
             add_dialog: AddDialogState::new(),
             delete_confirm: None,
             destroy_confirm_open: false,
+            about_open: false,
             bg_tx,
             log_tx,
             bg_rx,
@@ -466,6 +484,20 @@ impl App {
                     self.last_error = Some(e);
                 }
                 BgEvent::SettingsSaved => {}
+                #[cfg(windows)]
+                BgEvent::LoopbackDone(res) => {
+                    self.loopback_busy = false;
+                    match res {
+                        Ok(()) => {
+                            self.last_error = None;
+                            self.last_info =
+                                Some(format!("Launched {}", crate::core::loopback::DISPLAY_NAME));
+                        }
+                        Err(e) => {
+                            self.last_error = Some(format!("Loopback utility failed: {e}"));
+                        }
+                    }
+                }
             }
         }
     }
@@ -516,14 +548,35 @@ impl eframe::App for App {
             if let (Some(tray), Some(hwnd)) = (self.tray.as_ref(), self.main_hwnd) {
                 tray.set_main_hwnd(hwnd);
             }
+            // Re-enable Win11's rounded corners on the frameless window
+            // (decorated: false strips them along with the rest of the
+            // non-client area). One-shot per process.
+            #[cfg(windows)]
+            if let Some(hwnd) = self.main_hwnd {
+                crate::core::win::enable_rounded_corners(hwnd);
+            }
         }
 
         self.drain_events();
         self.handle_close_request(ctx);
 
+        // Custom frameless chrome (title bar + edge resize handles).
+        // Must run before the CentralPanel so the title bar docks to
+        // the very top.
+        crate::chrome::titlebar(ctx);
+
         egui::CentralPanel::default().show(ctx, |ui| {
             crate::ui::show(ui, self);
         });
+
+        // Edge-resize handles sit on top of the CentralPanel as
+        // foreground Areas, so they need to be added after it.
+        crate::chrome::resize_handles(ctx);
+
+        // Visible 1 px M3 frame around the window edge. Paints last so
+        // it overlays modal dimming overlays and stays visible through
+        // every UI state.
+        crate::chrome::outline(ctx);
 
         // No unconditional periodic repaint:
         //   * the log forwarder, the bg worker, the process exit watcher
@@ -585,6 +638,13 @@ fn background_loop(
                 settings = new_settings;
                 let _ = settings.save(&paths.settings_file);
                 let _ = event_tx.send(BgEvent::SettingsSaved);
+                ctx.request_repaint();
+            }
+            #[cfg(windows)]
+            Ok(BgCmd::OpenLoopback) => {
+                let res =
+                    crate::core::loopback::open_or_download(&paths).map_err(|e| e.to_string());
+                let _ = event_tx.send(BgEvent::LoopbackDone(res));
                 ctx.request_repaint();
             }
             Ok(BgCmd::Shutdown) => break,

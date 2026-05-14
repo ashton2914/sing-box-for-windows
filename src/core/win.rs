@@ -30,3 +30,29 @@ pub fn to_wide(s: &OsStr) -> Vec<u16> {
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
+
+/// Re-enable Windows 11's rounded window corners on a frameless window.
+///
+/// When we create the viewport with `decorated: false` the OS removes
+/// the entire non-client area, including the rounded-corner geometry
+/// the DWM normally applies on Win11. The `DWMWA_WINDOW_CORNER_PREFERENCE`
+/// attribute lets us opt back in. On Win10 the attribute is silently
+/// ignored, so this is safe to call unconditionally on Windows.
+pub fn enable_rounded_corners(hwnd: usize) {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
+    };
+
+    let pref: i32 = DWMWCP_ROUND;
+    unsafe {
+        // HRESULT result is intentionally discarded — failure here is
+        // purely cosmetic (square corners) and shouldn't break the app.
+        let _ = DwmSetWindowAttribute(
+            hwnd as HWND,
+            DWMWA_WINDOW_CORNER_PREFERENCE as u32,
+            &pref as *const i32 as *const _,
+            std::mem::size_of::<i32>() as u32,
+        );
+    }
+}
