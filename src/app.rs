@@ -597,6 +597,10 @@ fn main_hwnd_from_frame(_frame: &eframe::Frame) -> Option<usize> {
 }
 
 impl eframe::App for App {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        crate::theme::color::SURFACE.to_normalized_gamma_f32()
+    }
+
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         // Must run BEFORE any widget consumes input. Drops Enter while
         // an IME composition is active so a TextEdit doesn't surrender
@@ -633,7 +637,7 @@ impl eframe::App for App {
 
         // Edge-resize handles sit on top of the CentralPanel as
         // foreground Areas, so they need to be added after it.
-        crate::chrome::resize_handles(ctx);
+        crate::chrome::resize_handles(ctx, self.main_hwnd);
 
         // Visible 1 px M3 frame around the window edge. Paints last so
         // it overlays modal dimming overlays and stays visible through

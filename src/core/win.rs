@@ -63,6 +63,24 @@ pub struct WindowPoint {
     pub y: i32,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct WindowRect {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+}
+
+impl WindowRect {
+    pub fn width(self) -> i32 {
+        self.right - self.left
+    }
+
+    pub fn height(self) -> i32 {
+        self.bottom - self.top
+    }
+}
+
 pub fn cursor_pos() -> Option<WindowPoint> {
     use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
@@ -76,6 +94,13 @@ pub fn cursor_pos() -> Option<WindowPoint> {
 }
 
 pub fn window_pos(hwnd: usize) -> Option<WindowPoint> {
+    window_rect(hwnd).map(|rect| WindowPoint {
+        x: rect.left,
+        y: rect.top,
+    })
+}
+
+pub fn window_rect(hwnd: usize) -> Option<WindowRect> {
     use windows_sys::Win32::Foundation::{HWND, RECT};
     use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect;
 
@@ -86,9 +111,11 @@ pub fn window_pos(hwnd: usize) -> Option<WindowPoint> {
         bottom: 0,
     };
     let ok = unsafe { GetWindowRect(hwnd as HWND, &mut rect) } != 0;
-    ok.then_some(WindowPoint {
-        x: rect.left,
-        y: rect.top,
+    ok.then_some(WindowRect {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
     })
 }
 
@@ -107,6 +134,23 @@ pub fn set_window_pos(hwnd: usize, x: i32, y: i32) {
             0,
             0,
             SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+}
+
+pub fn set_window_rect(hwnd: usize, rect: WindowRect) {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER};
+
+    unsafe {
+        SetWindowPos(
+            hwnd as HWND,
+            std::ptr::null_mut(),
+            rect.left,
+            rect.top,
+            rect.width().max(1),
+            rect.height().max(1),
+            SWP_NOZORDER | SWP_NOACTIVATE,
         );
     }
 }

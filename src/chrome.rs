@@ -49,12 +49,21 @@ const RESIZE_CORNER: f32 = 22.0;
 // painted outline traces the actual rounded silhouette instead of
 // poking out past the OS-clipped corners.
 const WINDOW_CORNER_RADIUS: f32 = 8.0;
+const MIN_WINDOW_WIDTH: i32 = 700;
+const MIN_WINDOW_HEIGHT: i32 = 840;
 
 #[cfg(windows)]
 #[derive(Clone, Copy)]
 struct WindowDragState {
     cursor_start: crate::core::win::WindowPoint,
     window_start: crate::core::win::WindowPoint,
+}
+
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+struct WindowResizeState {
+    cursor_start: crate::core::win::WindowPoint,
+    window_start: crate::core::win::WindowRect,
 }
 
 /// Render the custom title bar at the top of the viewport. Must be
@@ -342,7 +351,7 @@ fn clear_titlebar_drag_state(ui: &mut egui::Ui, drag_state_id: egui::Id) {
 /// interaction strips instead of global pointer polling: the cursor
 /// change and the drag start are now tied to the same `Response`, which
 /// is what winit/eframe expects when beginning a native resize.
-pub fn resize_handles(ctx: &Context) {
+pub fn resize_handles(ctx: &Context, main_hwnd: Option<usize>) {
     if ctx.input(|i| i.viewport().maximized).unwrap_or(false) {
         // Maximised windows shouldn't resize from edges (and Windows
         // would refuse anyway). Skip so the cursor doesn't change to a
@@ -359,6 +368,7 @@ pub fn resize_handles(ctx: &Context) {
 
     resize_handle(
         ctx,
+        main_hwnd,
         "nw",
         Rect::from_min_max(
             screen.left_top(),
@@ -369,6 +379,7 @@ pub fn resize_handles(ctx: &Context) {
     );
     resize_handle(
         ctx,
+        main_hwnd,
         "sw",
         Rect::from_min_max(
             egui::pos2(screen.left(), screen.bottom() - c),
@@ -379,6 +390,7 @@ pub fn resize_handles(ctx: &Context) {
     );
     resize_handle(
         ctx,
+        main_hwnd,
         "se",
         Rect::from_min_max(
             egui::pos2(screen.right() - c, screen.bottom() - c),
@@ -390,6 +402,7 @@ pub fn resize_handles(ctx: &Context) {
 
     resize_handle(
         ctx,
+        main_hwnd,
         "n",
         Rect::from_min_max(
             egui::pos2(screen.left() + c, screen.top()),
@@ -400,6 +413,7 @@ pub fn resize_handles(ctx: &Context) {
     );
     resize_handle(
         ctx,
+        main_hwnd,
         "s",
         Rect::from_min_max(
             egui::pos2(screen.left() + c, screen.bottom() - e),
@@ -410,6 +424,7 @@ pub fn resize_handles(ctx: &Context) {
     );
     resize_handle(
         ctx,
+        main_hwnd,
         "w",
         Rect::from_min_max(
             egui::pos2(screen.left(), screen.top() + c),
@@ -420,6 +435,7 @@ pub fn resize_handles(ctx: &Context) {
     );
     resize_handle(
         ctx,
+        main_hwnd,
         "e",
         Rect::from_min_max(
             egui::pos2(screen.right() - e, screen.top() + TITLEBAR_HEIGHT),
@@ -432,6 +448,7 @@ pub fn resize_handles(ctx: &Context) {
 
 fn resize_handle(
     ctx: &Context,
+    main_hwnd: Option<usize>,
     id: &'static str,
     rect: Rect,
     dir: ResizeDirection,
@@ -449,10 +466,145 @@ fn resize_handle(
             if resp.hovered() || resp.dragged() {
                 ctx.set_cursor_icon(cursor);
             }
-            if resp.drag_started_by(egui::PointerButton::Primary) {
-                ctx.send_viewport_cmd(ViewportCommand::BeginResize(dir));
-            }
+            handle_resize(
+                ui,
+                ctx,
+                rect,
+                &resp,
+                main_hwnd,
+                dir,
+                egui::Id::new(("chrome_resize", id)),
+            );
         });
+}
+
+fn handle_resize(
+    ui: &mut egui::Ui,
+    ctx: &Context,
+    rect: Rect,
+    resp: &egui::Response,
+    main_hwnd: Option<usize>,
+    dir: ResizeDirection,
+    resize_id: egui::Id,
+) {
+    #[cfg(windows)]
+    if let Some(hwnd) = main_hwnd {
+        handle_resize_windows(ui, ctx, rect, hwnd, dir, resize_id);
+        return;
+    }
+
+    let _ = (ui, rect, main_hwnd, resize_id);
+    if resp.drag_started_by(egui::PointerButton::Primary) {
+        ctx.send_viewport_cmd(ViewportCommand::BeginResize(dir));
+    }
+}
+
+#[cfg(windows)]
+fn handle_resize_windows(
+    ui: &mut egui::Ui,
+    ctx: &Context,
+    rect: Rect,
+    hwnd: usize,
+    dir: ResizeDirection,
+    resize_id: egui::Id,
+) {
+    let state_id = resize_id.with("window_resize_state");
+    let (primary_pressed, primary_down, pointer_pos, pointer_delta) = ctx.input(|i| {
+        (
+            i.pointer.button_pressed(egui::PointerButton::Primary),
+            i.pointer.button_down(egui::PointerButton::Primary),
+            i.pointer.interact_pos().or(i.pointer.hover_pos()),
+            i.pointer.delta(),
+        )
+    });
+
+    if !primary_down {
+        clear_resize_state(ui, state_id);
+        return;
+    }
+
+    let state = ui
+        .data(|data| data.get_temp::<Option<WindowResizeState>>(state_id))
+        .flatten();
+
+    let pointer_in_resize_region = pointer_pos.is_some_and(|pos| rect.contains(pos));
+    let should_start = state.is_none()
+        && pointer_in_resize_region
+        && (primary_pressed || pointer_delta.length_sq() > 0.0);
+
+    let state = if should_start {
+        let state = crate::core::win::cursor_pos()
+            .zip(crate::core::win::window_rect(hwnd))
+            .map(|(cursor_start, window_start)| WindowResizeState {
+                cursor_start,
+                window_start,
+            });
+        ui.data_mut(|data| data.insert_temp(state_id, state));
+        state
+    } else {
+        state
+    };
+
+    if let Some(state) = state {
+        if let Some(cursor) = crate::core::win::cursor_pos() {
+            let dx = cursor.x - state.cursor_start.x;
+            let dy = cursor.y - state.cursor_start.y;
+            let mut next = state.window_start;
+            match dir {
+                ResizeDirection::North => next.top += dy,
+                ResizeDirection::South => next.bottom += dy,
+                ResizeDirection::West => next.left += dx,
+                ResizeDirection::East => next.right += dx,
+                ResizeDirection::NorthWest => {
+                    next.top += dy;
+                    next.left += dx;
+                }
+                ResizeDirection::NorthEast => {
+                    next.top += dy;
+                    next.right += dx;
+                }
+                ResizeDirection::SouthWest => {
+                    next.bottom += dy;
+                    next.left += dx;
+                }
+                ResizeDirection::SouthEast => {
+                    next.bottom += dy;
+                    next.right += dx;
+                }
+            }
+            clamp_resize_rect(&mut next, dir);
+            crate::core::win::set_window_rect(hwnd, next);
+            ctx.request_repaint();
+        }
+    }
+}
+
+#[cfg(windows)]
+fn clamp_resize_rect(rect: &mut crate::core::win::WindowRect, dir: ResizeDirection) {
+    match dir {
+        ResizeDirection::West | ResizeDirection::NorthWest | ResizeDirection::SouthWest => {
+            rect.left = rect.left.min(rect.right - MIN_WINDOW_WIDTH);
+        }
+        ResizeDirection::East | ResizeDirection::NorthEast | ResizeDirection::SouthEast => {
+            rect.right = rect.right.max(rect.left + MIN_WINDOW_WIDTH);
+        }
+        _ => {}
+    }
+
+    match dir {
+        ResizeDirection::North | ResizeDirection::NorthWest | ResizeDirection::NorthEast => {
+            rect.top = rect.top.min(rect.bottom - MIN_WINDOW_HEIGHT);
+        }
+        ResizeDirection::South | ResizeDirection::SouthWest | ResizeDirection::SouthEast => {
+            rect.bottom = rect.bottom.max(rect.top + MIN_WINDOW_HEIGHT);
+        }
+        _ => {}
+    }
+}
+
+#[cfg(windows)]
+fn clear_resize_state(ui: &mut egui::Ui, state_id: egui::Id) {
+    ui.data_mut(|data| data.insert_temp::<Option<WindowResizeState>>(state_id, None));
 }
 
 /// Paint a 1 px M3 outline around the visible window edge. Provides a
