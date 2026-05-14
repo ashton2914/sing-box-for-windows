@@ -52,11 +52,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
                 .data(|data| data.get_temp::<MainScrollState>(scroll_id))
                 .unwrap_or_default();
             let max_offset = (scroll_state.content_height - viewport_rect.height()).max(0.0);
-            // Use raw wheel/trackpad deltas for the main page. egui's
-            // `smooth_scroll_delta` intentionally adds a short easing tail for
-            // notched wheels, but that tail is visible as a hitch when it meets
-            // our top-anchored resize behavior.
-            let scroll_delta_y = ui.ctx().input(|i| i.raw_scroll_delta.y);
+            // Use egui's `smooth_scroll_delta`: it folds notched wheel ticks
+            // into a short easing tail so the page doesn't stair-step. The
+            // earlier raw-delta variant felt jittery, and a custom
+            // exponential approach felt unnatural, so we trust egui's tail.
+            let scroll_delta_y = ui.ctx().input(|i| i.smooth_scroll_delta.y);
             let pointer_in_viewport = ui
                 .ctx()
                 .input(|i| i.pointer.hover_pos())
