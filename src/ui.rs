@@ -5,6 +5,25 @@ use crate::config::entry::Source;
 use crate::core::shell;
 use crate::theme::{self, color, radius};
 
+#[derive(Clone, Copy)]
+struct MainScrollState {
+    viewport_height: f32,
+    content_height: f32,
+    offset_y: f32,
+}
+
+impl Default for MainScrollState {
+    fn default() -> Self {
+        Self {
+            viewport_height: 0.0,
+            content_height: 0.0,
+            offset_y: 0.0,
+        }
+    }
+}
+
+const MAIN_SCROLL_BOTTOM_MARGIN: f32 = 12.0;
+
 pub fn show(ui: &mut egui::Ui, app: &mut App) {
     // Keep the stacked page cards visually centered in the actual
     // CentralPanel viewport. This deliberately uses the parent UI width
@@ -25,26 +44,65 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
             ui.spacing_mut().scroll.floating = true;
             let page_width = ui.available_width();
             let card_width = (page_width - PAGE_INSET * 2.0).max(240.0);
+            let scroll_id = ui.make_persistent_id("main_scroll");
+            let viewport_size = egui::vec2(page_width, ui.available_height());
+            let (viewport_rect, _) = ui.allocate_exact_size(viewport_size, egui::Sense::hover());
 
-            egui::ScrollArea::vertical()
-                .auto_shrink([false; 2])
-                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                .show(ui, |ui| {
-                    egui::Frame::none()
-                        .inner_margin(egui::Margin {
-                            left: PAGE_INSET,
-                            right: PAGE_INSET,
-                            top: 0.0,
-                            bottom: 12.0,
-                        })
-                        .show(ui, |ui| {
-                            run_card(ui, app, card_width);
-                            ui.add_space(8.0);
-                            config_card(ui, app, card_width);
-                            ui.add_space(8.0);
-                            settings_card(ui, app, card_width);
-                        });
+            let mut scroll_state = ui
+                .data(|data| data.get_temp::<MainScrollState>(scroll_id))
+                .unwrap_or_default();
+            let max_offset = (scroll_state.content_height - viewport_rect.height()).max(0.0);
+            // Use raw wheel/trackpad deltas for the main page. egui's
+            // `smooth_scroll_delta` intentionally adds a short easing tail for
+            // notched wheels, but that tail is visible as a hitch when it meets
+            // our top-anchored resize behavior.
+            let scroll_delta_y = ui.ctx().input(|i| i.raw_scroll_delta.y);
+            let pointer_in_viewport = ui
+                .ctx()
+                .input(|i| i.pointer.hover_pos())
+                .is_some_and(|pos| viewport_rect.contains(pos));
+
+            if pointer_in_viewport && scroll_delta_y.abs() > 0.0 {
+                let requested = scroll_state.offset_y - scroll_delta_y;
+                scroll_state.offset_y = if requested > scroll_state.offset_y {
+                    requested.min(max_offset.max(scroll_state.offset_y))
+                } else {
+                    requested.max(0.0)
+                };
+            } else if viewport_rect.height() < scroll_state.viewport_height - 0.5 {
+                scroll_state.offset_y = scroll_state.offset_y.min(max_offset);
+            }
+
+            let content_rect = egui::Rect::from_min_size(
+                viewport_rect.left_top() - egui::vec2(0.0, scroll_state.offset_y),
+                egui::vec2(
+                    viewport_rect.width(),
+                    scroll_state.content_height.max(viewport_rect.height()),
+                ),
+            );
+            let mut content_ui = ui.child_ui(content_rect, *ui.layout(), None);
+
+            let content = egui::Frame::none()
+                .inner_margin(egui::Margin {
+                    left: PAGE_INSET,
+                    right: PAGE_INSET,
+                    top: 0.0,
+                    bottom: MAIN_SCROLL_BOTTOM_MARGIN,
+                })
+                .show(&mut content_ui, |ui| {
+                    run_card(ui, app, card_width);
+                    ui.add_space(8.0);
+                    config_card(ui, app, card_width);
+                    ui.add_space(8.0);
+                    settings_card(ui, app, card_width);
                 });
+
+            scroll_state.viewport_height = viewport_rect.height();
+            scroll_state.content_height = content.response.rect.height();
+            if scroll_state.offset_y <= 0.5 {
+                scroll_state.offset_y = 0.0;
+            }
+            ui.data_mut(|data| data.insert_temp(scroll_id, scroll_state));
         });
 
     add_config_modal(ui.ctx(), app);
@@ -834,6 +892,7 @@ fn settings_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
                         )
                         .clicked()
                     {
+                        app.about_modal_state.reset();
                         app.about_open = true;
                     }
                 });
@@ -1243,112 +1302,123 @@ fn add_config_modal(ctx: &egui::Context, app: &mut App) {
     let is_edit = app.add_dialog.is_edit();
     let title = if is_edit { "Edit config" } else { "Add config" };
     let busy = app.add_dialog.busy;
+    let mut modal_state = app.add_dialog.modal_state.clone();
 
-    let result = theme::modal_dialog(ctx, "add_config_modal", title, 320.0, !busy, |ui| {
-        ui.spacing_mut().item_spacing.y = 4.0;
+    let result = theme::modal_dialog_with_state(
+        ctx,
+        "add_config_modal",
+        title,
+        320.0,
+        !busy,
+        &mut modal_state,
+        |ui, close| {
+            ui.spacing_mut().item_spacing.y = 4.0;
 
-        // ----- Name -----
-        field_label(ui, "NAME");
-        let name_resp = theme::input_singleline(ui, &mut app.add_dialog.name, "Config name");
-        if name_resp.changed() {
-            app.add_dialog.name_error = None;
-        }
-        if let Some(err) = app.add_dialog.name_error.clone() {
-            field_error(ui, &err);
-        }
-
-        // ----- Source segmented selector -----
-        ui.add_space(8.0);
-        field_label(ui, "SOURCE");
-        if segmented_two(
-            ui,
-            &mut app.add_dialog.kind,
-            [
-                (SourceKind::Remote, "Remote URL"),
-                (SourceKind::Local, "Local file"),
-            ],
-        ) {
-            // Switching source kind hides the now-irrelevant input,
-            // so its stale error message would be confusing.
-            app.add_dialog.path_error = None;
-            app.add_dialog.url_error = None;
-        }
-
-        // ----- URL or File row -----
-        ui.add_space(8.0);
-        match app.add_dialog.kind {
-            SourceKind::Remote => {
-                let url_resp = theme::input_singleline(ui, &mut app.add_dialog.url, "URL");
-                if url_resp.changed() {
-                    app.add_dialog.url_error = None;
-                }
-                if let Some(err) = app.add_dialog.url_error.clone() {
-                    field_error(ui, &err);
-                }
+            // ----- Name -----
+            field_label(ui, "NAME");
+            let name_resp = theme::input_singleline(ui, &mut app.add_dialog.name, "Config name");
+            if name_resp.changed() {
+                app.add_dialog.name_error = None;
             }
-            SourceKind::Local => {
-                ui.horizontal(|ui| {
-                    let browse_w = 84.0;
-                    let avail = ui.available_width() - browse_w - ui.spacing().item_spacing.x;
-                    let path_resp = theme::input_singleline_sized(
-                        ui,
-                        &mut app.add_dialog.path,
-                        "File path",
-                        [avail.max(120.0), 32.0],
-                    );
-                    if path_resp.changed() {
-                        app.add_dialog.path_error = None;
+            if let Some(err) = app.add_dialog.name_error.clone() {
+                field_error(ui, &err);
+            }
+
+            // ----- Source segmented selector -----
+            ui.add_space(8.0);
+            field_label(ui, "SOURCE");
+            if segmented_two(
+                ui,
+                &mut app.add_dialog.kind,
+                [
+                    (SourceKind::Remote, "Remote URL"),
+                    (SourceKind::Local, "Local file"),
+                ],
+            ) {
+                // Switching source kind hides the now-irrelevant input,
+                // so its stale error message would be confusing.
+                app.add_dialog.path_error = None;
+                app.add_dialog.url_error = None;
+            }
+
+            // ----- URL or File row -----
+            ui.add_space(8.0);
+            match app.add_dialog.kind {
+                SourceKind::Remote => {
+                    let url_resp = theme::input_singleline(ui, &mut app.add_dialog.url, "URL");
+                    if url_resp.changed() {
+                        app.add_dialog.url_error = None;
                     }
-                    if ui
-                        .add_sized([browse_w, 32.0], theme::tonal_button("Browse…"))
-                        .clicked()
-                    {
-                        if let Some(p) = rfd::FileDialog::new()
-                            .add_filter("JSON", &["json"])
-                            .pick_file()
-                        {
-                            app.add_dialog.path = p.display().to_string();
+                    if let Some(err) = app.add_dialog.url_error.clone() {
+                        field_error(ui, &err);
+                    }
+                }
+                SourceKind::Local => {
+                    ui.horizontal(|ui| {
+                        let browse_w = 84.0;
+                        let avail = ui.available_width() - browse_w - ui.spacing().item_spacing.x;
+                        let path_resp = theme::input_singleline_sized(
+                            ui,
+                            &mut app.add_dialog.path,
+                            "File path",
+                            [avail.max(120.0), 32.0],
+                        );
+                        if path_resp.changed() {
                             app.add_dialog.path_error = None;
                         }
+                        if ui
+                            .add_sized([browse_w, 32.0], theme::tonal_button("Browse…"))
+                            .clicked()
+                        {
+                            if let Some(p) = rfd::FileDialog::new()
+                                .add_filter("JSON", &["json"])
+                                .pick_file()
+                            {
+                                app.add_dialog.path = p.display().to_string();
+                                app.add_dialog.path_error = None;
+                            }
+                        }
+                    });
+                    if let Some(err) = app.add_dialog.path_error.clone() {
+                        field_error(ui, &err);
                     }
-                });
-                if let Some(err) = app.add_dialog.path_error.clone() {
-                    field_error(ui, &err);
                 }
             }
-        }
 
-        // ----- Footer -----
-        ui.add_space(12.0);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let primary_label = if busy {
-                if is_edit {
-                    "Saving…"
+            // ----- Footer -----
+            ui.add_space(12.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let primary_label = if busy {
+                    if is_edit {
+                        "Saving…"
+                    } else {
+                        "Adding…"
+                    }
+                } else if is_edit {
+                    "Save"
                 } else {
-                    "Adding…"
+                    "Add"
+                };
+                if ui
+                    .add_enabled(!busy, theme::filled_button(primary_label))
+                    .clicked()
+                {
+                    app.submit_add_dialog();
                 }
-            } else if is_edit {
-                "Save"
-            } else {
-                "Add"
-            };
-            if ui
-                .add_enabled(!busy, theme::filled_button(primary_label))
-                .clicked()
-            {
-                app.submit_add_dialog();
-            }
-            if ui
-                .add_enabled(!busy, theme::text_button("Cancel"))
-                .clicked()
-            {
-                theme::request_modal_close(ctx, "add_config_modal");
-            }
-        });
-    });
+                if ui
+                    .add_enabled(!busy, theme::text_button("Cancel"))
+                    .clicked()
+                {
+                    *close = true;
+                }
+            });
+        },
+    );
 
     if result.close_requested {
         app.add_dialog.reset();
+    } else {
+        app.add_dialog.modal_state = modal_state;
     }
 }
 
@@ -1368,7 +1438,7 @@ fn delete_confirm_modal(ctx: &egui::Context, app: &mut App) {
         "Delete config",
         360.0,
         true,
-        |ui| {
+        |ui, close| {
             ui.label(
                 egui::RichText::new(format!(
                     "Delete '{}' and wipe its folder?\n{}",
@@ -1385,11 +1455,11 @@ fn delete_confirm_modal(ctx: &egui::Context, app: &mut App) {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.add(theme::destructive_filled_button("Delete")).clicked() {
                     let _ = app.bg_tx.send(BgCmd::DeleteConfig(slug.clone()));
-                    theme::request_modal_close(ctx, "delete_confirm_modal");
+                    *close = true;
                 }
                 ui.add_space(8.0);
                 if ui.add(theme::text_button("Cancel")).clicked() {
-                    theme::request_modal_close(ctx, "delete_confirm_modal");
+                    *close = true;
                 }
             });
         },
@@ -1409,7 +1479,7 @@ fn destroy_confirm_modal(ctx: &egui::Context, app: &mut App) {
         "Destroy working directory",
         360.0,
         true,
-        |ui| {
+        |ui, close| {
             ui.label(
                 egui::RichText::new(
                     "This will clear the current working directory. \
@@ -1431,11 +1501,11 @@ fn destroy_confirm_modal(ctx: &egui::Context, app: &mut App) {
                         }
                         Err(e) => app.last_error = Some(e.to_string()),
                     }
-                    theme::request_modal_close(ctx, "destroy_confirm_modal");
+                    *close = true;
                 }
                 ui.add_space(8.0);
                 if ui.add(theme::text_button("Cancel")).clicked() {
-                    theme::request_modal_close(ctx, "destroy_confirm_modal");
+                    *close = true;
                 }
             });
         },
@@ -1494,7 +1564,8 @@ fn about_modal(ctx: &egui::Context, app: &mut App) {
         + frame_pad * 2.0;
     let body_max_h = (screen.height() - edge_gap * 2.0 - chrome_h).max(48.0);
 
-    let result = theme::modal_dialog_sized(
+    let mut modal_state = app.about_modal_state.clone();
+    let result = theme::modal_dialog_sized_with_state(
         ctx,
         "about_modal",
         "About",
@@ -1502,7 +1573,8 @@ fn about_modal(ctx: &egui::Context, app: &mut App) {
         body_max_h,
         frame_pad,
         true,
-        |ui, body_max_h| {
+        &mut modal_state,
+        |ui, body_max_h, close| {
             // ----- Scrollable body -----
             // All variable-height content (header, disclaimer, GPL
             // short notice, full license box) lives inside this outer
@@ -1611,12 +1683,15 @@ fn about_modal(ctx: &egui::Context, app: &mut App) {
             // tiny windows where the body is heavily scrolled.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.add(theme::tonal_button("Close")).clicked() {
-                    theme::request_modal_close(ctx, "about_modal");
+                    *close = true;
                 }
             });
         },
     );
     if result.close_requested {
         app.about_open = false;
+        app.about_modal_state.reset();
+    } else {
+        app.about_modal_state = modal_state;
     }
 }

@@ -60,6 +60,7 @@ pub enum SourceKind {
 
 pub struct AddDialogState {
     pub open: bool,
+    pub modal_state: crate::theme::ModalState,
     /// `Some(slug)` puts the dialog in edit mode for that entry.
     pub editing_slug: Option<String>,
     pub name: String,
@@ -79,6 +80,7 @@ impl AddDialogState {
     fn new() -> Self {
         Self {
             open: false,
+            modal_state: crate::theme::ModalState::default(),
             editing_slug: None,
             name: String::new(),
             kind: SourceKind::Remote,
@@ -150,6 +152,7 @@ pub struct App {
     pub destroy_confirm_open: bool,
     /// About / license dialog open state.
     pub about_open: bool,
+    pub about_modal_state: crate::theme::ModalState,
 
     pub bg_tx: Sender<BgCmd>,
     pub log_tx: Sender<LogEvent>,
@@ -220,6 +223,7 @@ impl App {
             delete_confirm: None,
             destroy_confirm_open: false,
             about_open: false,
+            about_modal_state: crate::theme::ModalState::default(),
             bg_tx,
             log_tx,
             bg_rx,

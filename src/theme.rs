@@ -200,12 +200,20 @@ pub fn blend_over(base: Color32, top: Color32, top_alpha: f32) -> Color32 {
 }
 
 pub const TRANSITION_FAST: f32 = 0.14;
-pub const TRANSITION_MODAL: f32 = 0.16;
+pub const TRANSITION_MODAL: f32 = 0.22;
 pub const TRANSITION_POPUP: f32 = 0.12;
 
 pub fn ease_out_cubic(t: f32) -> f32 {
     let inv = 1.0 - t.clamp(0.0, 1.0);
     1.0 - inv * inv * inv
+}
+
+/// Mirror of `ease_out_cubic` — fast at the start, slow at the end. Use
+/// this for the *closing* half of a transition so the user immediately
+/// sees the modal start to leave instead of a long static plateau.
+pub fn ease_in_cubic(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * t
 }
 
 pub fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
@@ -223,23 +231,18 @@ pub fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
     )
 }
 
-fn modal_open_t(ctx: &egui::Context, id: egui::Id) -> f32 {
-    let frame = ctx.frame_nr();
-    let now = ctx.input(|i| i.time);
-    let start = ctx.data_mut(|data| {
-        let start = match data.get_temp::<(u64, f64)>(id) {
-            Some((last_frame, start)) if last_frame + 1 >= frame => start,
-            _ => now,
-        };
-        data.insert_temp(id, (frame, start));
-        start
-    });
-    let predicted_dt = ctx.input(|i| i.predicted_dt);
-    let t = (((now - start) as f32 + predicted_dt * 0.5) / TRANSITION_MODAL).clamp(0.0, 1.0);
-    if t < 1.0 {
-        ctx.request_repaint();
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ModalPhase {
+    Closed,
+    Opening,
+    Open,
+    Closing,
+}
+
+impl Default for ModalPhase {
+    fn default() -> Self {
+        Self::Closed
     }
-    ease_out_cubic(t)
 }
 
 struct ModalTransition {
@@ -248,72 +251,90 @@ struct ModalTransition {
     close_finished: bool,
 }
 
-/// Request the standard modal exit animation for `id`. The caller should keep
-/// rendering the modal until `ModalResult::close_requested` becomes true.
-pub fn request_modal_close(ctx: &egui::Context, id: &str) {
-    let close_id = egui::Id::new((id, "close_requested"));
-    let close_start_id = egui::Id::new((id, "close_transition"));
-    let frame = ctx.frame_nr();
-    let now = ctx.input(|i| i.time);
-    ctx.data_mut(|data| {
-        let already_closing = data.get_temp::<bool>(close_id).unwrap_or(false);
-        data.insert_temp(close_id, true);
-        if !already_closing {
-            data.insert_temp(close_start_id, (frame, now));
-        }
-    });
-    ctx.request_repaint();
+#[derive(Clone, Debug, Default)]
+pub struct ModalState {
+    phase: ModalPhase,
+    progress: f32,
+    last_tick: Option<std::time::Instant>,
 }
 
-fn modal_transition(ctx: &egui::Context, id: &str) -> ModalTransition {
-    let frame = ctx.frame_nr();
-    let now = ctx.input(|i| i.time);
-    let alive_id = egui::Id::new((id, "alive"));
-    let close_id = egui::Id::new((id, "close_requested"));
-    let close_start_id = egui::Id::new((id, "close_transition"));
-
-    let closing = ctx.data_mut(|data| {
-        let was_alive = data
-            .get_temp::<u64>(alive_id)
-            .is_some_and(|last_frame| last_frame + 1 >= frame);
-        data.insert_temp(alive_id, frame);
-        if !was_alive {
-            data.insert_temp(close_id, false);
-        }
-        data.get_temp::<bool>(close_id).unwrap_or(false)
-    });
-
-    if closing {
-        let start = ctx.data_mut(|data| match data.get_temp::<(u64, f64)>(close_start_id) {
-            Some((_, start)) => start,
-            None => {
-                data.insert_temp(close_start_id, (frame, now));
-                now
-            }
-        });
-        let predicted_dt = ctx.input(|i| i.predicted_dt);
-        let raw = (((now - start) as f32 + predicted_dt * 0.5) / TRANSITION_MODAL).clamp(0.0, 1.0);
-        if raw < 1.0 {
-            ctx.request_repaint();
-        }
-        let close_finished = raw >= 1.0;
-        if close_finished {
-            ctx.data_mut(|data| {
-                data.insert_temp(close_id, false);
-                data.insert_temp(alive_id, 0_u64);
-            });
-        }
-        return ModalTransition {
-            t: 1.0 - ease_out_cubic(raw),
-            closing: true,
-            close_finished,
-        };
+impl ModalState {
+    pub fn reset(&mut self) {
+        *self = Self::default();
     }
 
+    fn ensure_opening(&mut self) {
+        if self.phase == ModalPhase::Closed {
+            self.phase = ModalPhase::Opening;
+            self.progress = 0.0;
+            self.last_tick = None;
+        }
+    }
+
+    fn request_close(&mut self) {
+        if !matches!(self.phase, ModalPhase::Closed | ModalPhase::Closing) {
+            self.phase = ModalPhase::Closing;
+            self.progress = self.progress.max(0.0);
+            self.last_tick = None;
+        }
+    }
+
+    fn is_closing(&self) -> bool {
+        self.phase == ModalPhase::Closing
+    }
+}
+
+fn modal_transition(ctx: &egui::Context, state: &mut ModalState) -> ModalTransition {
+    state.ensure_opening();
+
+    let now = std::time::Instant::now();
+    let elapsed = state
+        .last_tick
+        .map(|last_tick| now.saturating_duration_since(last_tick).as_secs_f32())
+        .unwrap_or(0.0)
+        .min(1.0 / 20.0);
+    state.last_tick = Some(now);
+
+    let step = elapsed / TRANSITION_MODAL;
+    match state.phase {
+        ModalPhase::Opening => {
+            state.progress = (state.progress + step).min(1.0);
+            if state.progress >= 1.0 {
+                state.phase = ModalPhase::Open;
+            }
+        }
+        ModalPhase::Closing => {
+            state.progress = (state.progress - step).max(0.0);
+            if state.progress <= 0.0 {
+                state.phase = ModalPhase::Closed;
+            }
+        }
+        ModalPhase::Open => {
+            state.progress = 1.0;
+        }
+        ModalPhase::Closed => {
+            state.progress = 0.0;
+        }
+    }
+
+    if matches!(state.phase, ModalPhase::Opening | ModalPhase::Closing) {
+        ctx.request_repaint_after(std::time::Duration::from_millis(16));
+    }
+
+    // Asymmetric easing: ease-out while opening (fast in, soft landing),
+    // ease-in while closing (immediate departure, soft tail). Sharing
+    // ease_out_cubic for both halves causes a visible "plateau then jump"
+    // because at progress=0.7 the multiplier is still 0.97 — the user
+    // perceives no change for ~60% of the close, then a flash.
+    let t = match state.phase {
+        ModalPhase::Closing => ease_in_cubic(state.progress),
+        _ => ease_out_cubic(state.progress),
+    };
+
     ModalTransition {
-        t: modal_open_t(ctx, egui::Id::new((id, "open_transition"))),
-        closing: false,
-        close_finished: false,
+        t,
+        closing: state.is_closing(),
+        close_finished: state.phase == ModalPhase::Closed,
     }
 }
 
@@ -919,16 +940,23 @@ pub fn modal_frame() -> egui::Frame {
 /// [`modal_frame`] so small viewport dialogs can reduce padding without
 /// changing the canonical look of normal confirmation/input dialogs.
 pub fn modal_frame_with_margin(inner_margin: f32) -> egui::Frame {
+    modal_frame_with_margin_opacity(inner_margin, 1.0)
+}
+
+fn modal_frame_with_margin_opacity(inner_margin: f32, opacity: f32) -> egui::Frame {
     egui::Frame::none()
-        .fill(color::SURFACE_CONTAINER_HIGH)
+        .fill(with_alpha(color::SURFACE_CONTAINER_HIGH, opacity))
         .rounding(Rounding::same(radius::LG))
         .inner_margin(Margin::same(inner_margin))
-        .stroke(Stroke::new(1.0, color::OUTLINE_VARIANT))
+        .stroke(Stroke::new(
+            1.0,
+            with_alpha(color::OUTLINE_VARIANT, opacity),
+        ))
         .shadow(egui::epaint::Shadow {
             offset: Vec2::new(0.0, 8.0),
             blur: modal::SHADOW_BLUR,
             spread: 0.0,
-            color: Color32::from_black_alpha(120),
+            color: Color32::from_black_alpha((120.0 * opacity.clamp(0.0, 1.0)) as u8),
         })
 }
 
@@ -950,11 +978,28 @@ pub fn modal_dialog<R>(
     title: &str,
     width: f32,
     closable: bool,
-    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+    add_contents: impl FnOnce(&mut egui::Ui, &mut bool) -> R,
+) -> ModalResult<R> {
+    let state_id = egui::Id::new((id, "animation_state"));
+    let mut state = ctx.data_mut(|data| data.get_temp::<ModalState>(state_id).unwrap_or_default());
+    let result = modal_dialog_with_state(ctx, id, title, width, closable, &mut state, add_contents);
+    ctx.data_mut(|data| data.insert_temp(state_id, state));
+    result
+}
+
+pub fn modal_dialog_with_state<R>(
+    ctx: &egui::Context,
+    id: &str,
+    title: &str,
+    width: f32,
+    closable: bool,
+    state: &mut ModalState,
+    add_contents: impl FnOnce(&mut egui::Ui, &mut bool) -> R,
 ) -> ModalResult<R> {
     let screen = ctx.screen_rect();
-    let transition = modal_transition(ctx, id);
+    let transition = modal_transition(ctx, state);
     let open_t = transition.t;
+    let mut wants_close = false;
     egui::Area::new(egui::Id::new((id, "backdrop")))
         .order(egui::Order::Middle)
         .fixed_pos(screen.left_top())
@@ -972,7 +1017,7 @@ pub fn modal_dialog<R>(
         .order(egui::Order::Foreground)
         .anchor(
             egui::Align2::CENTER_CENTER,
-            Vec2::new(0.0, -8.0 * (1.0 - open_t)),
+            Vec2::new(0.0, 14.0 * (1.0 - open_t)),
         )
         .fade_in(false)
         .show(ctx, |ui| {
@@ -980,7 +1025,7 @@ pub fn modal_dialog<R>(
             if transition.closing {
                 ui.disable();
             }
-            modal_frame()
+            modal_frame_with_margin_opacity(modal::INNER_MARGIN, open_t)
                 .show(ui, |ui| {
                     ui.set_width(width);
 
@@ -994,19 +1039,23 @@ pub fn modal_dialog<R>(
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if closable && close_button(ui).on_hover_text("Close").clicked() {
-                                request_modal_close(ctx, id);
+                                wants_close = true;
                             }
                         });
                     });
                     ui.add_space(modal::HEADER_GAP);
 
-                    add_contents(ui)
+                    add_contents(ui, &mut wants_close)
                 })
                 .inner
         });
 
     if closable && !transition.closing && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-        request_modal_close(ctx, id);
+        wants_close = true;
+    }
+    if closable && wants_close {
+        state.request_close();
+        ctx.request_repaint_after(std::time::Duration::from_millis(16));
     }
 
     ModalResult {
@@ -1015,10 +1064,10 @@ pub fn modal_dialog<R>(
     }
 }
 
-/// Same chrome/behavior as [`modal_dialog`], but the caller controls the
-/// maximum content height. Use for long, scrollable modal bodies that must
-/// track the current viewport size exactly.
-pub fn modal_dialog_sized<R>(
+/// Same chrome/behavior as [`modal_dialog_with_state`], but the caller
+/// controls the maximum content height. Use for long, scrollable modal
+/// bodies that must track the current viewport size exactly.
+pub fn modal_dialog_sized_with_state<R>(
     ctx: &egui::Context,
     id: &str,
     title: &str,
@@ -1026,11 +1075,13 @@ pub fn modal_dialog_sized<R>(
     content_max_height: f32,
     frame_inner_margin: f32,
     closable: bool,
-    add_contents: impl FnOnce(&mut egui::Ui, f32) -> R,
+    state: &mut ModalState,
+    add_contents: impl FnOnce(&mut egui::Ui, f32, &mut bool) -> R,
 ) -> ModalResult<R> {
     let screen = ctx.screen_rect();
-    let transition = modal_transition(ctx, id);
+    let transition = modal_transition(ctx, state);
     let open_t = transition.t;
+    let mut wants_close = false;
     egui::Area::new(egui::Id::new((id, "backdrop")))
         .order(egui::Order::Middle)
         .fixed_pos(screen.left_top())
@@ -1048,7 +1099,7 @@ pub fn modal_dialog_sized<R>(
         .order(egui::Order::Foreground)
         .anchor(
             egui::Align2::CENTER_CENTER,
-            Vec2::new(0.0, -8.0 * (1.0 - open_t)),
+            Vec2::new(0.0, 14.0 * (1.0 - open_t)),
         )
         .fade_in(false)
         .show(ctx, |ui| {
@@ -1056,7 +1107,7 @@ pub fn modal_dialog_sized<R>(
             if transition.closing {
                 ui.disable();
             }
-            modal_frame_with_margin(frame_inner_margin)
+            modal_frame_with_margin_opacity(frame_inner_margin, open_t)
                 .show(ui, |ui| {
                     ui.set_width(width);
 
@@ -1069,19 +1120,23 @@ pub fn modal_dialog_sized<R>(
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if closable && close_button(ui).on_hover_text("Close").clicked() {
-                                request_modal_close(ctx, id);
+                                wants_close = true;
                             }
                         });
                     });
                     ui.add_space(modal::HEADER_GAP);
 
-                    add_contents(ui, content_max_height)
+                    add_contents(ui, content_max_height, &mut wants_close)
                 })
                 .inner
         });
 
     if closable && !transition.closing && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-        request_modal_close(ctx, id);
+        wants_close = true;
+    }
+    if closable && wants_close {
+        state.request_close();
+        ctx.request_repaint_after(std::time::Duration::from_millis(16));
     }
 
     ModalResult {
