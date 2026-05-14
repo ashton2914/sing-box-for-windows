@@ -242,6 +242,81 @@ fn modal_open_t(ctx: &egui::Context, id: egui::Id) -> f32 {
     ease_out_cubic(t)
 }
 
+struct ModalTransition {
+    t: f32,
+    closing: bool,
+    close_finished: bool,
+}
+
+/// Request the standard modal exit animation for `id`. The caller should keep
+/// rendering the modal until `ModalResult::close_requested` becomes true.
+pub fn request_modal_close(ctx: &egui::Context, id: &str) {
+    let close_id = egui::Id::new((id, "close_requested"));
+    let close_start_id = egui::Id::new((id, "close_transition"));
+    let frame = ctx.frame_nr();
+    let now = ctx.input(|i| i.time);
+    ctx.data_mut(|data| {
+        let already_closing = data.get_temp::<bool>(close_id).unwrap_or(false);
+        data.insert_temp(close_id, true);
+        if !already_closing {
+            data.insert_temp(close_start_id, (frame, now));
+        }
+    });
+    ctx.request_repaint();
+}
+
+fn modal_transition(ctx: &egui::Context, id: &str) -> ModalTransition {
+    let frame = ctx.frame_nr();
+    let now = ctx.input(|i| i.time);
+    let alive_id = egui::Id::new((id, "alive"));
+    let close_id = egui::Id::new((id, "close_requested"));
+    let close_start_id = egui::Id::new((id, "close_transition"));
+
+    let closing = ctx.data_mut(|data| {
+        let was_alive = data
+            .get_temp::<u64>(alive_id)
+            .is_some_and(|last_frame| last_frame + 1 >= frame);
+        data.insert_temp(alive_id, frame);
+        if !was_alive {
+            data.insert_temp(close_id, false);
+        }
+        data.get_temp::<bool>(close_id).unwrap_or(false)
+    });
+
+    if closing {
+        let start = ctx.data_mut(|data| match data.get_temp::<(u64, f64)>(close_start_id) {
+            Some((_, start)) => start,
+            None => {
+                data.insert_temp(close_start_id, (frame, now));
+                now
+            }
+        });
+        let predicted_dt = ctx.input(|i| i.predicted_dt);
+        let raw = (((now - start) as f32 + predicted_dt * 0.5) / TRANSITION_MODAL).clamp(0.0, 1.0);
+        if raw < 1.0 {
+            ctx.request_repaint();
+        }
+        let close_finished = raw >= 1.0;
+        if close_finished {
+            ctx.data_mut(|data| {
+                data.insert_temp(close_id, false);
+                data.insert_temp(alive_id, 0_u64);
+            });
+        }
+        return ModalTransition {
+            t: 1.0 - ease_out_cubic(raw),
+            closing: true,
+            close_finished,
+        };
+    }
+
+    ModalTransition {
+        t: modal_open_t(ctx, egui::Id::new((id, "open_transition"))),
+        closing: false,
+        close_finished: false,
+    }
+}
+
 // -------------------------------------------------------------------------
 // Component helpers
 // -------------------------------------------------------------------------
@@ -577,6 +652,7 @@ const SWITCH_THUMB_OFF: f32 = 12.0;
 const SWITCH_THUMB_ON: f32 = 16.0;
 const SWITCH_LABEL_FONT: f32 = 13.0;
 const SWITCH_ROW_H: f32 = 28.0;
+const SWITCH_TRANSITION: f32 = 0.24;
 
 pub fn switch(ui: &mut egui::Ui, on: &mut bool, text: &str) -> egui::Response {
     let avail_w = ui.available_width();
@@ -617,7 +693,7 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool, text: &str) -> egui::Response {
     let value_t = ease_out_cubic(ui.ctx().animate_bool_with_time(
         row_resp.id.with("value_transition"),
         *on,
-        TRANSITION_FAST,
+        SWITCH_TRANSITION,
     ));
 
     let track_rounding = Rounding::same(SWITCH_TRACK_H * 0.5);
@@ -857,14 +933,14 @@ pub fn modal_frame_with_margin(inner_margin: f32) -> egui::Frame {
 }
 
 pub struct ModalResult<R> {
-    /// True if the × button was clicked or Esc was pressed.
-    /// Caller is responsible for actually dismissing the dialog state.
+    /// True after a requested close has finished its exit animation.
+    /// Caller can then dismiss the backing dialog state.
     pub close_requested: bool,
     pub inner: R,
 }
 
-/// Render a modal dialog and return what its body produced plus whether the
-/// user asked to close it. Backdrop blocks clicks behind the dialog.
+/// Render a modal dialog and return what its body produced plus whether its
+/// close animation has completed. Backdrop blocks clicks behind the dialog.
 ///
 /// `closable=false` disables both the × button and Esc dismissal — useful
 /// for "in-flight" states (e.g. while a network add is running).
@@ -876,9 +952,9 @@ pub fn modal_dialog<R>(
     closable: bool,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> ModalResult<R> {
-    // Dimmed backdrop that also captures clicks behind the modal.
     let screen = ctx.screen_rect();
-    let open_t = modal_open_t(ctx, egui::Id::new((id, "open_transition")));
+    let transition = modal_transition(ctx, id);
+    let open_t = transition.t;
     egui::Area::new(egui::Id::new((id, "backdrop")))
         .order(egui::Order::Middle)
         .fixed_pos(screen.left_top())
@@ -892,7 +968,6 @@ pub fn modal_dialog<R>(
             );
         });
 
-    let mut close_requested = false;
     let area = egui::Area::new(egui::Id::new(id))
         .order(egui::Order::Foreground)
         .anchor(
@@ -902,6 +977,9 @@ pub fn modal_dialog<R>(
         .fade_in(false)
         .show(ctx, |ui| {
             ui.multiply_opacity(open_t);
+            if transition.closing {
+                ui.disable();
+            }
             modal_frame()
                 .show(ui, |ui| {
                     ui.set_width(width);
@@ -916,7 +994,7 @@ pub fn modal_dialog<R>(
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if closable && close_button(ui).on_hover_text("Close").clicked() {
-                                close_requested = true;
+                                request_modal_close(ctx, id);
                             }
                         });
                     });
@@ -927,12 +1005,12 @@ pub fn modal_dialog<R>(
                 .inner
         });
 
-    if closable && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-        close_requested = true;
+    if closable && !transition.closing && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        request_modal_close(ctx, id);
     }
 
     ModalResult {
-        close_requested,
+        close_requested: transition.close_finished,
         inner: area.inner,
     }
 }
@@ -951,7 +1029,8 @@ pub fn modal_dialog_sized<R>(
     add_contents: impl FnOnce(&mut egui::Ui, f32) -> R,
 ) -> ModalResult<R> {
     let screen = ctx.screen_rect();
-    let open_t = modal_open_t(ctx, egui::Id::new((id, "open_transition")));
+    let transition = modal_transition(ctx, id);
+    let open_t = transition.t;
     egui::Area::new(egui::Id::new((id, "backdrop")))
         .order(egui::Order::Middle)
         .fixed_pos(screen.left_top())
@@ -965,7 +1044,6 @@ pub fn modal_dialog_sized<R>(
             );
         });
 
-    let mut close_requested = false;
     let area = egui::Area::new(egui::Id::new(id))
         .order(egui::Order::Foreground)
         .anchor(
@@ -975,6 +1053,9 @@ pub fn modal_dialog_sized<R>(
         .fade_in(false)
         .show(ctx, |ui| {
             ui.multiply_opacity(open_t);
+            if transition.closing {
+                ui.disable();
+            }
             modal_frame_with_margin(frame_inner_margin)
                 .show(ui, |ui| {
                     ui.set_width(width);
@@ -988,7 +1069,7 @@ pub fn modal_dialog_sized<R>(
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if closable && close_button(ui).on_hover_text("Close").clicked() {
-                                close_requested = true;
+                                request_modal_close(ctx, id);
                             }
                         });
                     });
@@ -999,12 +1080,12 @@ pub fn modal_dialog_sized<R>(
                 .inner
         });
 
-    if closable && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-        close_requested = true;
+    if closable && !transition.closing && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        request_modal_close(ctx, id);
     }
 
     ModalResult {
-        close_requested,
+        close_requested: transition.close_finished,
         inner: area.inner,
     }
 }

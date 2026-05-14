@@ -1342,7 +1342,7 @@ fn add_config_modal(ctx: &egui::Context, app: &mut App) {
                 .add_enabled(!busy, theme::text_button("Cancel"))
                 .clicked()
             {
-                app.add_dialog.reset();
+                theme::request_modal_close(ctx, "add_config_modal");
             }
         });
     });
@@ -1385,11 +1385,11 @@ fn delete_confirm_modal(ctx: &egui::Context, app: &mut App) {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.add(theme::destructive_filled_button("Delete")).clicked() {
                     let _ = app.bg_tx.send(BgCmd::DeleteConfig(slug.clone()));
-                    app.delete_confirm = None;
+                    theme::request_modal_close(ctx, "delete_confirm_modal");
                 }
                 ui.add_space(8.0);
                 if ui.add(theme::text_button("Cancel")).clicked() {
-                    app.delete_confirm = None;
+                    theme::request_modal_close(ctx, "delete_confirm_modal");
                 }
             });
         },
@@ -1431,11 +1431,11 @@ fn destroy_confirm_modal(ctx: &egui::Context, app: &mut App) {
                         }
                         Err(e) => app.last_error = Some(e.to_string()),
                     }
-                    app.destroy_confirm_open = false;
+                    theme::request_modal_close(ctx, "destroy_confirm_modal");
                 }
                 ui.add_space(8.0);
                 if ui.add(theme::text_button("Cancel")).clicked() {
-                    app.destroy_confirm_open = false;
+                    theme::request_modal_close(ctx, "destroy_confirm_modal");
                 }
             });
         },
@@ -1611,7 +1611,7 @@ fn about_modal(ctx: &egui::Context, app: &mut App) {
             // tiny windows where the body is heavily scrolled.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.add(theme::tonal_button("Close")).clicked() {
-                    app.about_open = false;
+                    theme::request_modal_close(ctx, "about_modal");
                 }
             });
         },
