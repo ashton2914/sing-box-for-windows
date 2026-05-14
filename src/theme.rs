@@ -581,12 +581,7 @@ const SWITCH_ROW_H: f32 = 28.0;
 pub fn switch(ui: &mut egui::Ui, on: &mut bool, text: &str) -> egui::Response {
     let avail_w = ui.available_width();
     let row_size = Vec2::new(avail_w, SWITCH_ROW_H);
-    let (rect, mut resp) = ui.allocate_exact_size(row_size, egui::Sense::click());
-
-    if resp.clicked() {
-        *on = !*on;
-        resp.mark_changed();
-    }
+    let (rect, row_resp) = ui.allocate_exact_size(row_size, egui::Sense::hover());
 
     let painter = ui.painter();
 
@@ -601,12 +596,6 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool, text: &str) -> egui::Response {
     let label_pos = egui::pos2(rect.left(), rect.center().y - label_galley.size().y * 0.5);
     painter.galley(label_pos, label_galley, color::ON_SURFACE);
 
-    let value_t = ease_out_cubic(ui.ctx().animate_bool_with_time(
-        resp.id.with("value_transition"),
-        *on,
-        TRANSITION_FAST,
-    ));
-
     // Track, right-aligned.
     let track_rect = egui::Rect::from_min_size(
         egui::pos2(
@@ -615,6 +604,22 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool, text: &str) -> egui::Response {
         ),
         Vec2::new(SWITCH_TRACK_W, SWITCH_TRACK_H),
     );
+    let mut resp = ui.interact(
+        track_rect.expand(4.0),
+        row_resp.id.with("switch_track"),
+        egui::Sense::click(),
+    );
+    if resp.clicked() {
+        *on = !*on;
+        resp.mark_changed();
+    }
+
+    let value_t = ease_out_cubic(ui.ctx().animate_bool_with_time(
+        row_resp.id.with("value_transition"),
+        *on,
+        TRANSITION_FAST,
+    ));
+
     let track_rounding = Rounding::same(SWITCH_TRACK_H * 0.5);
     painter.rect_filled(
         track_rect,
@@ -658,10 +663,8 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool, text: &str) -> egui::Response {
     resp
 }
 
-/// Decide whether to draw the switch state-layer halo. We allocate a wide
-/// row so the whole label is clickable, but the halo should only appear
-/// when the cursor is actually over the switch track — otherwise hovering
-/// the label text leaves a halo glowing far to the right.
+/// Decide whether to draw the switch state-layer halo. Only the track is
+/// interactive, so hovering the label cannot show a halo or toggle the value.
 fn switch_layer_alpha(ui: &egui::Ui, resp: &egui::Response, track_rect: egui::Rect) -> Option<f32> {
     let pointer = ui.ctx().input(|i| i.pointer.hover_pos())?;
     let in_track = track_rect.expand(2.0).contains(pointer);

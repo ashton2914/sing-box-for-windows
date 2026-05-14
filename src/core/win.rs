@@ -56,3 +56,57 @@ pub fn enable_rounded_corners(hwnd: usize) {
         );
     }
 }
+
+#[derive(Clone, Copy, Debug)]
+pub struct WindowPoint {
+    pub x: i32,
+    pub y: i32,
+}
+
+pub fn cursor_pos() -> Option<WindowPoint> {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+    let mut point = POINT { x: 0, y: 0 };
+    let ok = unsafe { GetCursorPos(&mut point) } != 0;
+    ok.then_some(WindowPoint {
+        x: point.x,
+        y: point.y,
+    })
+}
+
+pub fn window_pos(hwnd: usize) -> Option<WindowPoint> {
+    use windows_sys::Win32::Foundation::{HWND, RECT};
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect;
+
+    let mut rect = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    let ok = unsafe { GetWindowRect(hwnd as HWND, &mut rect) } != 0;
+    ok.then_some(WindowPoint {
+        x: rect.left,
+        y: rect.top,
+    })
+}
+
+pub fn set_window_pos(hwnd: usize, x: i32, y: i32) {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+    };
+
+    unsafe {
+        SetWindowPos(
+            hwnd as HWND,
+            std::ptr::null_mut(),
+            x,
+            y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+}

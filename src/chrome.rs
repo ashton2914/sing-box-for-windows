@@ -50,9 +50,16 @@ const RESIZE_CORNER: f32 = 22.0;
 // poking out past the OS-clipped corners.
 const WINDOW_CORNER_RADIUS: f32 = 8.0;
 
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+struct WindowDragState {
+    cursor_start: crate::core::win::WindowPoint,
+    window_start: crate::core::win::WindowPoint,
+}
+
 /// Render the custom title bar at the top of the viewport. Must be
 /// called before any other panel so it docks at the very top.
-pub fn titlebar(ctx: &Context) {
+pub fn titlebar(ctx: &Context, main_hwnd: Option<usize>) {
     egui::TopBottomPanel::top("custom_titlebar")
         .exact_height(TITLEBAR_HEIGHT)
         .frame(
@@ -73,17 +80,15 @@ pub fn titlebar(ctx: &Context) {
                     egui::pos2(rect.left(), rect.top()),
                     egui::pos2(strip_left, rect.bottom()),
                 );
-                let drag = ui.interact(
-                    drag_rect,
-                    ui.id().with("titlebar_drag"),
-                    Sense::click_and_drag(),
-                );
-                if drag.drag_started_by(egui::PointerButton::Primary) {
-                    ctx.send_viewport_cmd(ViewportCommand::StartDrag);
-                }
+                let drag_id = ui.id().with("titlebar_drag");
+                let drag_state_id = drag_id.with("window_drag_state");
+                let drag = ui.interact(drag_rect, drag_id, Sense::click());
                 if drag.double_clicked() {
+                    clear_titlebar_drag_state(ui, drag_state_id);
                     let maxed = ctx.input(|i| i.viewport().maximized).unwrap_or(false);
                     ctx.send_viewport_cmd(ViewportCommand::Maximized(!maxed));
+                } else {
+                    handle_titlebar_drag(ui, ctx, drag_rect, &drag, main_hwnd, drag_state_id);
                 }
             }
 
@@ -137,6 +142,14 @@ pub fn titlebar(ctx: &Context) {
                 // for the "Close button hides to tray" setting.
                 ctx.send_viewport_cmd(ViewportCommand::Close);
             }
+
+            painter.line_segment(
+                [
+                    egui::pos2(rect.left(), rect.bottom() - 0.5),
+                    egui::pos2(rect.right(), rect.bottom() - 0.5),
+                ],
+                Stroke::new(1.0, color::OUTLINE_VARIANT),
+            );
         });
 }
 
@@ -174,23 +187,26 @@ fn titlebar_button(ui: &mut egui::Ui, kind: TitleButton) -> egui::Response {
     let fg = if resp.hovered() && kind == TitleButton::Close {
         Color32::WHITE
     } else {
-        color::ON_SURFACE_VARIANT
+        color::ON_SURFACE
     };
     let stroke = Stroke::new(1.0, fg);
     let cx = rect.center().x;
     let cy = rect.center().y;
     let s = 5.0;
+    let left = cx - s + 0.5;
+    let right = cx + s + 0.5;
+    let top = cy - s + 0.5;
+    let bottom = cy + s + 0.5;
 
     match kind {
         TitleButton::Minimize => {
             painter.line_segment(
-                [egui::pos2(cx - s, cy + 0.5), egui::pos2(cx + s, cy + 0.5)],
+                [egui::pos2(left, cy + 0.5), egui::pos2(right, cy + 0.5)],
                 stroke,
             );
         }
         TitleButton::Maximize => {
-            let r = Rect::from_center_size(egui::pos2(cx, cy), Vec2::splat(s * 2.0));
-            painter.rect_stroke(r, Rounding::ZERO, stroke);
+            paint_square_outline(&painter, left, top, right, bottom, stroke);
         }
         TitleButton::Restore => {
             // Two overlapping squares: one offset up-right, one front.
@@ -198,28 +214,128 @@ fn titlebar_button(ui: &mut egui::Ui, kind: TitleButton) -> egui::Response {
             // square so the result reads as the standard "restore"
             // glyph (overlapping windows).
             let off = 2.0;
-            let inner = s * 2.0 - off;
-            let back = Rect::from_min_size(egui::pos2(cx - s + off, cy - s), Vec2::splat(inner));
-            painter.rect_stroke(back, Rounding::ZERO, stroke);
-            let front = Rect::from_min_size(egui::pos2(cx - s, cy - s + off), Vec2::splat(inner));
+            let inner_right = right - off;
+            let inner_bottom = bottom - off;
+            paint_square_outline(&painter, left + off, top, right, inner_bottom, stroke);
+            let front = Rect::from_min_max(
+                egui::pos2(left - 0.5, top + off - 0.5),
+                egui::pos2(inner_right + 0.5, bottom + 0.5),
+            );
             // Repaint background under the front glyph so the back
             // square's outline doesn't bleed through.
             painter.rect_filled(front, Rounding::ZERO, bg);
-            painter.rect_stroke(front, Rounding::ZERO, stroke);
+            paint_square_outline(&painter, left, top + off, inner_right, bottom, stroke);
         }
         TitleButton::Close => {
-            painter.line_segment(
-                [egui::pos2(cx - s, cy - s), egui::pos2(cx + s, cy + s)],
-                stroke,
-            );
-            painter.line_segment(
-                [egui::pos2(cx - s, cy + s), egui::pos2(cx + s, cy - s)],
-                stroke,
-            );
+            painter.line_segment([egui::pos2(left, top), egui::pos2(right, bottom)], stroke);
+            painter.line_segment([egui::pos2(left, bottom), egui::pos2(right, top)], stroke);
         }
     }
 
     resp
+}
+
+fn paint_square_outline(
+    painter: &egui::Painter,
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+    stroke: Stroke,
+) {
+    painter.line_segment([egui::pos2(left, top), egui::pos2(right, top)], stroke);
+    painter.line_segment([egui::pos2(right, top), egui::pos2(right, bottom)], stroke);
+    painter.line_segment(
+        [egui::pos2(right, bottom), egui::pos2(left, bottom)],
+        stroke,
+    );
+    painter.line_segment([egui::pos2(left, bottom), egui::pos2(left, top)], stroke);
+}
+
+fn handle_titlebar_drag(
+    ui: &mut egui::Ui,
+    ctx: &Context,
+    drag_rect: Rect,
+    drag: &egui::Response,
+    main_hwnd: Option<usize>,
+    drag_state_id: egui::Id,
+) {
+    #[cfg(windows)]
+    if let Some(hwnd) = main_hwnd {
+        handle_titlebar_drag_windows(ui, ctx, drag_rect, hwnd, drag_state_id);
+        return;
+    }
+
+    let _ = (ui, drag_rect, main_hwnd, drag_state_id);
+    if drag.hovered() && ctx.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary)) {
+        ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+    }
+}
+
+#[cfg(windows)]
+fn handle_titlebar_drag_windows(
+    ui: &mut egui::Ui,
+    ctx: &Context,
+    drag_rect: Rect,
+    hwnd: usize,
+    drag_state_id: egui::Id,
+) {
+    let (primary_pressed, primary_down, pointer_pos, pointer_delta) = ctx.input(|i| {
+        (
+            i.pointer.button_pressed(egui::PointerButton::Primary),
+            i.pointer.button_down(egui::PointerButton::Primary),
+            i.pointer.interact_pos().or(i.pointer.hover_pos()),
+            i.pointer.delta(),
+        )
+    });
+
+    if !primary_down {
+        clear_titlebar_drag_state(ui, drag_state_id);
+        return;
+    }
+
+    let state = ui
+        .data(|data| data.get_temp::<Option<WindowDragState>>(drag_state_id))
+        .flatten();
+
+    let pointer_in_drag_region = pointer_pos.is_some_and(|pos| drag_rect.contains(pos));
+    let should_start = state.is_none()
+        && pointer_in_drag_region
+        && (primary_pressed || pointer_delta.length_sq() > 0.0);
+
+    let state = if should_start {
+        let state = crate::core::win::cursor_pos()
+            .zip(crate::core::win::window_pos(hwnd))
+            .map(|(cursor_start, window_start)| WindowDragState {
+                cursor_start,
+                window_start,
+            });
+        ui.data_mut(|data| data.insert_temp(drag_state_id, state));
+        state
+    } else {
+        state
+    };
+
+    if let Some(state) = state {
+        if let Some(cursor) = crate::core::win::cursor_pos() {
+            crate::core::win::set_window_pos(
+                hwnd,
+                state.window_start.x + cursor.x - state.cursor_start.x,
+                state.window_start.y + cursor.y - state.cursor_start.y,
+            );
+            ctx.request_repaint();
+        }
+    }
+}
+
+#[cfg(windows)]
+fn clear_titlebar_drag_state(ui: &mut egui::Ui, drag_state_id: egui::Id) {
+    ui.data_mut(|data| data.insert_temp::<Option<WindowDragState>>(drag_state_id, None));
+}
+
+#[cfg(not(windows))]
+fn clear_titlebar_drag_state(ui: &mut egui::Ui, drag_state_id: egui::Id) {
+    let _ = (ui, drag_state_id);
 }
 
 /// Edge + corner resize handles. Implemented as narrow foreground

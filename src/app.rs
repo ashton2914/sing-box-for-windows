@@ -625,7 +625,7 @@ impl eframe::App for App {
         // Custom frameless chrome (title bar + edge resize handles).
         // Must run before the CentralPanel so the title bar docks to
         // the very top.
-        crate::chrome::titlebar(ctx);
+        crate::chrome::titlebar(ctx, self.main_hwnd);
 
         egui::CentralPanel::default().show(ctx, |ui| {
             crate::ui::show(ui, self);

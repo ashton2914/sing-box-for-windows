@@ -936,7 +936,9 @@ fn run_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
 
         if let Some(err) = app.last_error.clone() {
             ui.add_space(8.0);
-            banner(ui, &err, color::ERROR_CONTAINER, color::ERROR);
+            if banner(ui, &err, color::ERROR_CONTAINER, color::ERROR) {
+                app.last_error = None;
+            }
         } else if let Some(info) = app.last_info.clone() {
             // Success / informational banner — same shape as the error
             // banner but tinted with the success palette. Previously
@@ -944,12 +946,14 @@ fn run_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
             // rendered, so the user got no visible feedback for those
             // actions outside the log card.
             ui.add_space(8.0);
-            banner(
+            if banner(
                 ui,
                 &info,
                 theme::with_alpha(color::SUCCESS, 0.18),
                 color::ON_SURFACE,
-            );
+            ) {
+                app.last_info = None;
+            }
         }
 
         ui.add_space(14.0);
@@ -1049,28 +1053,73 @@ fn status_text_block(ui: &mut egui::Ui, status_text: &str, status_color: egui::C
 
 // ---------- Helpers ----------
 
-fn banner(ui: &mut egui::Ui, text: &str, bg: egui::Color32, fg: egui::Color32) {
+fn banner(ui: &mut egui::Ui, text: &str, bg: egui::Color32, fg: egui::Color32) -> bool {
     // Match the log card's outer width: both panels sit in the same
     // run_card column, so the banner should always span the full
     // available width regardless of how short the message is.
     // Otherwise short errors render as a narrow blob that visually
     // detaches from the log frame below.
     const HORIZONTAL_PAD: f32 = 12.0;
-    let inner_width = (ui.available_width() - HORIZONTAL_PAD * 2.0).max(0.0);
-    egui::Frame::none()
-        .fill(bg)
-        .rounding(egui::Rounding::same(radius::MD))
-        .inner_margin(egui::Margin {
-            left: HORIZONTAL_PAD,
-            right: HORIZONTAL_PAD,
-            top: 8.0,
-            bottom: 8.0,
-        })
-        .show(ui, |ui| {
-            ui.set_min_width(inner_width);
-            ui.set_max_width(inner_width);
-            ui.add(egui::Label::new(egui::RichText::new(text).color(fg)).wrap());
-        });
+    const VERTICAL_PAD: f32 = 8.0;
+    const CLOSE_SIZE: f32 = 20.0;
+    const CLOSE_GAP: f32 = 8.0;
+
+    let width = ui.available_width();
+    let label_width = (width - HORIZONTAL_PAD * 2.0 - CLOSE_SIZE - CLOSE_GAP).max(0.0);
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let galley = ui.fonts(|f| f.layout(text.to_owned(), font, fg, label_width));
+    let height = galley.size().y + VERTICAL_PAD * 2.0;
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+    let painter = ui.painter().clone();
+    painter.rect_filled(rect, egui::Rounding::same(radius::MD), bg);
+    painter.galley(
+        rect.left_top() + egui::vec2(HORIZONTAL_PAD, VERTICAL_PAD),
+        galley,
+        fg,
+    );
+
+    let close_rect = egui::Rect::from_center_size(
+        egui::pos2(
+            rect.right() - HORIZONTAL_PAD - CLOSE_SIZE * 0.5,
+            rect.center().y,
+        ),
+        egui::Vec2::splat(CLOSE_SIZE),
+    );
+    let close_resp = ui.interact(
+        close_rect,
+        response.id.with("banner_close"),
+        egui::Sense::click(),
+    );
+    paint_banner_close_button(ui, close_rect, &close_resp, fg);
+    close_resp.on_hover_text("Dismiss").clicked()
+}
+
+fn paint_banner_close_button(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    resp: &egui::Response,
+    fg: egui::Color32,
+) {
+    let painter = ui.painter().clone();
+    if resp.hovered() {
+        painter.circle_filled(
+            rect.center(),
+            10.0,
+            theme::with_alpha(color::ON_SURFACE, 0.12),
+        );
+    }
+
+    let s = 4.5;
+    let stroke = egui::Stroke::new(1.4, fg);
+    let c = rect.center();
+    painter.line_segment(
+        [egui::pos2(c.x - s, c.y - s), egui::pos2(c.x + s, c.y + s)],
+        stroke,
+    );
+    painter.line_segment(
+        [egui::pos2(c.x - s, c.y + s), egui::pos2(c.x + s, c.y - s)],
+        stroke,
+    );
 }
 
 /// A field caption in M3 "Label Small" style — small, muted, all-caps.
