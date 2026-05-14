@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::NaiveDateTime;
 use eframe::egui;
@@ -20,6 +20,7 @@ use crate::log_bus::LogEvent;
 /// Older lines are evicted from the front (O(1) on `VecDeque`) once the
 /// buffer hits this limit.
 const LOG_BACKLOG_CAP: usize = 1000;
+const AUTO_UPDATE_FAILURE_RETRY: Duration = Duration::from_secs(10 * 60);
 
 /// Commands sent from the UI thread → background worker.
 pub enum BgCmd {
@@ -45,7 +46,7 @@ pub enum BgEvent {
     EditDone(Result<String, String>),
     UpdateDone(Result<String, String>),
     DeleteDone(Result<String, String>),
-    SettingsSaved,
+    SettingsSaved(Result<(), String>),
     #[cfg(windows)]
     LoopbackDone(Result<(), String>),
 }
@@ -167,12 +168,13 @@ pub struct App {
 impl App {
     pub fn new(ctx: egui::Context) -> Self {
         let paths = Paths::resolve().expect("Failed to initialize directories");
-        let settings = Settings::load(&paths.settings_file);
+        let (settings, settings_warning) = Settings::load_with_warning(&paths.settings_file);
         let proc = ProcessHandle::new();
 
-        let configs = paths.list_configs();
+        let (configs, config_load_errors) = paths.list_configs_with_errors();
         let cores = paths.list_cores();
         let pending_initial_silent_hide = settings.silent_start;
+        let startup_warning = summarize_startup_warnings(settings_warning, &config_load_errors);
 
         let (bg_tx, bg_cmd_rx) = channel::<BgCmd>();
         let (bg_event_tx, bg_rx) = channel::<BgEvent>();
@@ -211,7 +213,7 @@ impl App {
             configs,
             cores,
             logs: VecDeque::with_capacity(LOG_BACKLOG_CAP),
-            last_error: None,
+            last_error: startup_warning,
             last_info: None,
             loopback_busy: false,
             add_dialog: AddDialogState::new(),
@@ -254,9 +256,11 @@ impl App {
         app
     }
 
-    pub fn refresh_listings(&mut self) {
-        self.configs = self.paths.list_configs();
+    pub fn refresh_listings(&mut self) -> Option<String> {
+        let (configs, config_load_errors) = self.paths.list_configs_with_errors();
+        self.configs = configs;
         self.cores = self.paths.list_cores();
+        summarize_config_load_errors(&config_load_errors)
     }
 
     /// Reconcile the on-disk Windows autostart entry and the Task
@@ -447,11 +451,11 @@ impl App {
                 BgEvent::AddDone(Ok(slug)) => {
                     self.add_dialog.busy = false;
                     self.add_dialog.reset();
-                    self.refresh_listings();
+                    let listing_warning = self.refresh_listings();
                     self.settings.selected_config = Some(slug.clone());
                     self.persist_settings();
-                    self.last_error = None;
-                    self.last_info = Some(format!("Added '{slug}'"));
+                    self.last_error = listing_warning;
+                    self.last_info = self.last_error.is_none().then(|| format!("Added '{slug}'"));
                 }
                 BgEvent::AddDone(Err(e)) => {
                     self.add_dialog.busy = false;
@@ -460,18 +464,24 @@ impl App {
                 BgEvent::EditDone(Ok(slug)) => {
                     self.add_dialog.busy = false;
                     self.add_dialog.reset();
-                    self.refresh_listings();
-                    self.last_error = None;
-                    self.last_info = Some(format!("Updated '{slug}'"));
+                    let listing_warning = self.refresh_listings();
+                    self.last_error = listing_warning;
+                    self.last_info = self
+                        .last_error
+                        .is_none()
+                        .then(|| format!("Updated '{slug}'"));
                 }
                 BgEvent::EditDone(Err(e)) => {
                     self.add_dialog.busy = false;
                     self.last_error = Some(e);
                 }
                 BgEvent::UpdateDone(Ok(slug)) => {
-                    self.refresh_listings();
-                    self.last_error = None;
-                    self.last_info = Some(format!("Updated '{slug}'"));
+                    let listing_warning = self.refresh_listings();
+                    self.last_error = listing_warning;
+                    self.last_info = self
+                        .last_error
+                        .is_none()
+                        .then(|| format!("Updated '{slug}'"));
                 }
                 BgEvent::UpdateDone(Err(e)) => {
                     self.last_error = Some(e);
@@ -481,14 +491,20 @@ impl App {
                         self.settings.selected_config = None;
                         self.persist_settings();
                     }
-                    self.refresh_listings();
-                    self.last_error = None;
-                    self.last_info = Some(format!("Deleted '{slug}'"));
+                    let listing_warning = self.refresh_listings();
+                    self.last_error = listing_warning;
+                    self.last_info = self
+                        .last_error
+                        .is_none()
+                        .then(|| format!("Deleted '{slug}'"));
                 }
                 BgEvent::DeleteDone(Err(e)) => {
                     self.last_error = Some(e);
                 }
-                BgEvent::SettingsSaved => {}
+                BgEvent::SettingsSaved(Ok(())) => {}
+                BgEvent::SettingsSaved(Err(e)) => {
+                    self.last_error = Some(format!("Failed to save settings: {e}"));
+                }
                 #[cfg(windows)]
                 BgEvent::LoopbackDone(res) => {
                     self.loopback_busy = false;
@@ -536,6 +552,32 @@ impl App {
         } else {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         }
+    }
+}
+
+fn summarize_startup_warnings(
+    settings_warning: Option<String>,
+    config_errors: &[String],
+) -> Option<String> {
+    let mut warnings = Vec::new();
+    if let Some(warning) = settings_warning {
+        warnings.push(warning);
+    }
+    if let Some(warning) = summarize_config_load_errors(config_errors) {
+        warnings.push(warning);
+    }
+    (!warnings.is_empty()).then(|| warnings.join("\n"))
+}
+
+fn summarize_config_load_errors(errors: &[String]) -> Option<String> {
+    match errors {
+        [] => None,
+        [one] => Some(one.clone()),
+        many => Some(format!(
+            "Failed to load {} config entries. First error: {}",
+            many.len(),
+            many[0]
+        )),
     }
 }
 
@@ -626,6 +668,8 @@ fn background_loop(
     event_tx: Sender<BgEvent>,
     ctx: egui::Context,
 ) {
+    let mut last_auto_attempt: Option<(String, Instant)> = None;
+
     loop {
         let timeout = Duration::from_secs(30);
         match cmd_rx.recv_timeout(timeout) {
@@ -651,8 +695,10 @@ fn background_loop(
             }
             Ok(BgCmd::SaveSettings(new_settings)) => {
                 settings = new_settings;
-                let _ = settings.save(&paths.settings_file);
-                let _ = event_tx.send(BgEvent::SettingsSaved);
+                let res = settings
+                    .save(&paths.settings_file)
+                    .map_err(|e| e.to_string());
+                let _ = event_tx.send(BgEvent::SettingsSaved(res));
                 ctx.request_repaint();
             }
             #[cfg(windows)]
@@ -675,7 +721,9 @@ fn background_loop(
                         if let Some(entry) = paths.load_entry(&slug) {
                             if matches!(entry.metadata.source, Source::Remote { .. })
                                 && should_auto_update(&entry, interval)
+                                && can_attempt_auto_update(&last_auto_attempt, &slug)
                             {
+                                last_auto_attempt = Some((slug.clone(), Instant::now()));
                                 let res = updater::refresh_entry(&entry, &log_tx)
                                     .map(|_| slug.clone())
                                     .map_err(|e| e.to_string());
@@ -688,6 +736,15 @@ fn background_loop(
             }
             Err(RecvTimeoutError::Disconnected) => break,
         }
+    }
+}
+
+fn can_attempt_auto_update(last_attempt: &Option<(String, Instant)>, slug: &str) -> bool {
+    match last_attempt {
+        Some((last_slug, last_at)) if last_slug == slug => {
+            last_at.elapsed() >= AUTO_UPDATE_FAILURE_RETRY
+        }
+        _ => true,
     }
 }
 

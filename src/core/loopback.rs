@@ -81,11 +81,14 @@ fn ensure_downloaded(paths: &Paths) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(&tools_dir)?;
     let dest = tools_dir.join(INSTALLER_FILENAME);
 
-    // Reuse the cached installer if it's already present and non-empty
-    // — cheaper than refetching every click. The user can wipe the
-    // tools dir to force a fresh download.
-    if dest.metadata().map(|m| m.len() > 0).unwrap_or(false) {
-        return Ok(dest);
+    // Reuse the cached installer only if it still looks like a Windows
+    // executable. This avoids launching a cached HTML/error page or a
+    // truncated prior download.
+    if dest.exists() {
+        if is_valid_pe_file(&dest)? {
+            return Ok(dest);
+        }
+        std::fs::remove_file(&dest)?;
     }
 
     let client = reqwest::blocking::Client::builder()
@@ -110,9 +113,7 @@ fn ensure_downloaded(paths: &Paths) -> std::io::Result<PathBuf> {
         .bytes()
         .map_err(|e| std::io::Error::other(format!("download read failed: {e}")))?;
 
-    if bytes.is_empty() {
-        return Err(std::io::Error::other("downloaded file was empty"));
-    }
+    validate_pe_bytes(&bytes)?;
 
     // Write atomically: tmp → rename. Avoids leaving a half-written
     // exe behind if the process is killed mid-write.
@@ -120,4 +121,29 @@ fn ensure_downloaded(paths: &Paths) -> std::io::Result<PathBuf> {
     std::fs::write(&tmp, &bytes)?;
     std::fs::rename(&tmp, &dest)?;
     Ok(dest)
+}
+
+fn is_valid_pe_file(path: &Path) -> std::io::Result<bool> {
+    let bytes = std::fs::read(path)?;
+    Ok(validate_pe_bytes(&bytes).is_ok())
+}
+
+fn validate_pe_bytes(bytes: &[u8]) -> std::io::Result<()> {
+    if bytes.len() < 0x40 {
+        return Err(std::io::Error::other("downloaded file is too small"));
+    }
+    if &bytes[..2] != b"MZ" {
+        return Err(std::io::Error::other(
+            "downloaded file is not a Windows executable",
+        ));
+    }
+
+    let pe_offset = u32::from_le_bytes(bytes[0x3c..0x40].try_into().unwrap()) as usize;
+    let Some(pe_end) = pe_offset.checked_add(4) else {
+        return Err(std::io::Error::other("invalid PE header offset"));
+    };
+    if pe_end > bytes.len() || &bytes[pe_offset..pe_end] != b"PE\0\0" {
+        return Err(std::io::Error::other("invalid PE header signature"));
+    }
+    Ok(())
 }

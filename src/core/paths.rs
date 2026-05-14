@@ -68,33 +68,78 @@ impl Paths {
         self.core_dir.join(name)
     }
 
-    /// All sub-folders of `config/` that contain a `metadata.json`.
-    /// Returned sorted by display name.
-    pub fn list_configs(&self) -> Vec<ConfigEntry> {
-        let mut out: Vec<ConfigEntry> = std::fs::read_dir(&self.config_dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-            .filter_map(|e| {
-                let folder = e.path();
-                let slug = folder.file_name()?.to_str()?.to_string();
-                let meta_path = folder.join(METADATA_FILENAME);
-                let metadata = ConfigMetadata::load(&meta_path).ok()?;
-                Some(ConfigEntry {
+    /// All sub-folders of `config/` that contain a `metadata.json`, returned
+    /// sorted by display name, plus any metadata/load errors that would
+    /// otherwise make config folders disappear silently from the UI.
+    pub fn list_configs_with_errors(&self) -> (Vec<ConfigEntry>, Vec<String>) {
+        let mut out = Vec::new();
+        let mut errors = Vec::new();
+
+        let entries = match std::fs::read_dir(&self.config_dir) {
+            Ok(entries) => entries,
+            Err(e) => {
+                errors.push(format!(
+                    "Failed to read config directory {}: {e}",
+                    self.config_dir.display()
+                ));
+                return (out, errors);
+            }
+        };
+
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(e) => {
+                    errors.push(format!("Failed to read config directory entry: {e}"));
+                    continue;
+                }
+            };
+
+            match entry.file_type() {
+                Ok(t) if t.is_dir() => {}
+                Ok(_) => continue,
+                Err(e) => {
+                    errors.push(format!(
+                        "Failed to inspect config path {}: {e}",
+                        entry.path().display()
+                    ));
+                    continue;
+                }
+            }
+
+            let folder = entry.path();
+            let Some(slug) = folder
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(str::to_owned)
+            else {
+                errors.push(format!(
+                    "Skipped config folder with non-UTF-8 name: {}",
+                    folder.display()
+                ));
+                continue;
+            };
+            let meta_path = folder.join(METADATA_FILENAME);
+            match ConfigMetadata::load(&meta_path) {
+                Ok(metadata) => out.push(ConfigEntry {
                     slug,
                     metadata,
                     folder,
-                })
-            })
-            .collect();
+                }),
+                Err(e) => errors.push(format!(
+                    "Failed to load config metadata {}: {e}",
+                    meta_path.display()
+                )),
+            }
+        }
+
         out.sort_by(|a, b| {
             a.metadata
                 .name
                 .to_lowercase()
                 .cmp(&b.metadata.name.to_lowercase())
         });
-        out
+        (out, errors)
     }
 
     /// All `*.exe` files directly inside `core/`.

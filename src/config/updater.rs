@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
@@ -7,6 +7,7 @@ use anyhow::{anyhow, Context, Result};
 use crate::config::entry::{
     unique_slug, ConfigEntry, ConfigMetadata, Source, CONFIG_FILENAME, METADATA_FILENAME,
 };
+use crate::config::persist;
 use crate::core::paths::Paths;
 use crate::log_bus::LogEvent;
 
@@ -179,24 +180,8 @@ fn copy_local(src: &Path, dest: &Path, log_tx: &Sender<LogEvent>) -> Result<()> 
 }
 
 fn write_atomic(dest: &Path, bytes: &[u8]) -> Result<()> {
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent).context("failed to create destination directory")?;
-    }
-    let tmp = with_suffix(dest, ".tmp");
-    std::fs::write(&tmp, bytes).context("failed to write temp file")?;
-    if dest.exists() {
-        let bak = with_suffix(dest, ".bak");
-        let _ = std::fs::remove_file(&bak);
-        let _ = std::fs::rename(dest, &bak);
-    }
-    std::fs::rename(&tmp, dest).context("failed to replace config file")?;
-    Ok(())
-}
-
-fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
-    let mut s = path.as_os_str().to_owned();
-    s.push(suffix);
-    PathBuf::from(s)
+    persist::write_atomic_with_backup(dest, bytes)
+        .with_context(|| format!("failed to replace config file {}", dest.display()))
 }
 
 fn now_string() -> String {

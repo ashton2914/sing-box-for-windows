@@ -2,6 +2,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::persist;
+
 /// Global app settings persisted as `settings.json` next to the exe.
 ///
 /// Per-config metadata (name, source URL/path, last_updated) lives inside
@@ -52,14 +54,33 @@ impl Default for Settings {
 
 impl Settings {
     pub fn load(path: &Path) -> Self {
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+        Self::load_with_warning(path).0
+    }
+
+    pub fn load_with_warning(path: &Path) -> (Self, Option<String>) {
+        match std::fs::read_to_string(path) {
+            Ok(raw) => match serde_json::from_str(&raw) {
+                Ok(settings) => (settings, None),
+                Err(e) => (
+                    Self::default(),
+                    Some(format!(
+                        "Failed to parse settings file {}: {e}",
+                        path.display()
+                    )),
+                ),
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Self::default(), None),
+            Err(e) => (
+                Self::default(),
+                Some(format!(
+                    "Failed to read settings file {}: {e}",
+                    path.display()
+                )),
+            ),
+        }
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        let json = serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".to_string());
-        std::fs::write(path, json)
+        persist::save_json_pretty(path, self)
     }
 }

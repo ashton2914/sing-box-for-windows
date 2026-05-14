@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::persist;
+
 pub const CONFIG_FILENAME: &str = "config.json";
 pub const METADATA_FILENAME: &str = "metadata.json";
 
@@ -58,8 +60,7 @@ impl ConfigMetadata {
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        let json = serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".to_string());
-        std::fs::write(path, json)
+        persist::save_json_pretty(path, self)
     }
 }
 

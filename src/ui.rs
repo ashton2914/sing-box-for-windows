@@ -781,7 +781,9 @@ fn settings_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
                     .on_hover_text("Refresh core list")
                     .clicked()
                 {
-                    app.refresh_listings();
+                    if let Some(e) = app.refresh_listings() {
+                        app.last_error = Some(e);
+                    }
                 }
             });
 
