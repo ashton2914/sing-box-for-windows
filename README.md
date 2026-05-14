@@ -56,6 +56,7 @@ The script builds Windows x86_64 and ARM64 targets. ARM64 builds require a C com
 - [Architecture](docs/ARCHITECTURE.md)
 - [Development Guide](docs/DEVELOPMENT.md)
 - [Release Guide](docs/RELEASE.md)
+- [Release Notes](docs/RELEASE_NOTES.md)
 
 ## Project Direction
 

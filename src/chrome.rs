@@ -91,7 +91,11 @@ pub fn titlebar(ctx: &Context) {
             let title_font = FontId::proportional(17.0);
             let title_color = color::ON_SURFACE;
             let title_galley = ui.fonts(|f| {
-                f.layout_no_wrap(crate::APP_TITLE.to_string(), title_font.clone(), title_color)
+                f.layout_no_wrap(
+                    crate::APP_TITLE.to_string(),
+                    title_font.clone(),
+                    title_color,
+                )
             });
             let title_y = rect.center().y - title_galley.size().y * 0.5 - 0.5;
             let title_left = rect.left() + 18.0;

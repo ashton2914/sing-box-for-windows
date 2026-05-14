@@ -3,8 +3,9 @@ use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use chrono::NaiveDateTime;
 use eframe::egui;
 
 use crate::config::entry::{ConfigEntry, Source};
@@ -625,10 +626,6 @@ fn background_loop(
     event_tx: Sender<BgEvent>,
     ctx: egui::Context,
 ) {
-    let mut last_auto_run = Instant::now()
-        .checked_sub(Duration::from_secs(60 * 60 * 24))
-        .unwrap_or_else(Instant::now);
-
     loop {
         let timeout = Duration::from_secs(30);
         match cmd_rx.recv_timeout(timeout) {
@@ -645,7 +642,6 @@ fn background_loop(
             Ok(BgCmd::UpdateConfig(slug)) => {
                 let res = run_update_one(&paths, &slug, &log_tx);
                 let _ = event_tx.send(BgEvent::UpdateDone(res));
-                last_auto_run = Instant::now();
                 ctx.request_repaint();
             }
             Ok(BgCmd::DeleteConfig(slug)) => {
@@ -673,18 +669,19 @@ fn background_loop(
                         let interval = Duration::from_secs(
                             settings.update_interval_hours.max(1).saturating_mul(3600),
                         );
-                        if last_auto_run.elapsed() >= interval {
-                            // Only auto-update remote entries.
-                            if let Some(entry) = paths.load_entry(&slug) {
-                                if matches!(entry.metadata.source, Source::Remote { .. }) {
-                                    let res = updater::refresh_entry(&entry, &log_tx)
-                                        .map(|_| slug.clone())
-                                        .map_err(|e| e.to_string());
-                                    let _ = event_tx.send(BgEvent::UpdateDone(res));
-                                    ctx.request_repaint();
-                                }
+                        // Only auto-update remote entries. The persisted
+                        // `last_updated` timestamp is the source of truth so
+                        // restart/uptime quirks do not reset the schedule.
+                        if let Some(entry) = paths.load_entry(&slug) {
+                            if matches!(entry.metadata.source, Source::Remote { .. })
+                                && should_auto_update(&entry, interval)
+                            {
+                                let res = updater::refresh_entry(&entry, &log_tx)
+                                    .map(|_| slug.clone())
+                                    .map_err(|e| e.to_string());
+                                let _ = event_tx.send(BgEvent::UpdateDone(res));
+                                ctx.request_repaint();
                             }
-                            last_auto_run = Instant::now();
                         }
                     }
                 }
@@ -692,6 +689,26 @@ fn background_loop(
             Err(RecvTimeoutError::Disconnected) => break,
         }
     }
+}
+
+fn should_auto_update(entry: &ConfigEntry, interval: Duration) -> bool {
+    let Some(raw) = entry.metadata.last_updated.as_deref() else {
+        return true;
+    };
+
+    let Ok(last_updated) = NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S") else {
+        return true;
+    };
+
+    let now = chrono::Local::now().naive_local();
+    if last_updated > now {
+        return true;
+    }
+
+    now.signed_duration_since(last_updated)
+        .to_std()
+        .map(|elapsed| elapsed >= interval)
+        .unwrap_or(true)
 }
 
 /// Look up a single `ConfigEntry` by slug, or return a uniform
