@@ -1,4 +1,5 @@
 /target
+/dist/
 
 # Runtime data — created by the app at run time, NOT source code.
 /config/

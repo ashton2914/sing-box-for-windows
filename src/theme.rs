@@ -199,6 +199,49 @@ pub fn blend_over(base: Color32, top: Color32, top_alpha: f32) -> Color32 {
     )
 }
 
+pub const TRANSITION_FAST: f32 = 0.14;
+pub const TRANSITION_MODAL: f32 = 0.16;
+pub const TRANSITION_POPUP: f32 = 0.12;
+
+pub fn ease_out_cubic(t: f32) -> f32 {
+    let inv = 1.0 - t.clamp(0.0, 1.0);
+    1.0 - inv * inv * inv
+}
+
+pub fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let lerp = |x: u8, y: u8| {
+        ((1.0 - t) * x as f32 + t * y as f32)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    Color32::from_rgba_unmultiplied(
+        lerp(a.r(), b.r()),
+        lerp(a.g(), b.g()),
+        lerp(a.b(), b.b()),
+        lerp(a.a(), b.a()),
+    )
+}
+
+fn modal_open_t(ctx: &egui::Context, id: egui::Id) -> f32 {
+    let frame = ctx.frame_nr();
+    let now = ctx.input(|i| i.time);
+    let start = ctx.data_mut(|data| {
+        let start = match data.get_temp::<(u64, f64)>(id) {
+            Some((last_frame, start)) if last_frame + 1 >= frame => start,
+            _ => now,
+        };
+        data.insert_temp(id, (frame, start));
+        start
+    });
+    let predicted_dt = ctx.input(|i| i.predicted_dt);
+    let t = (((now - start) as f32 + predicted_dt * 0.5) / TRANSITION_MODAL).clamp(0.0, 1.0);
+    if t < 1.0 {
+        ctx.request_repaint();
+    }
+    ease_out_cubic(t)
+}
+
 // -------------------------------------------------------------------------
 // Component helpers
 // -------------------------------------------------------------------------
@@ -558,6 +601,12 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool, text: &str) -> egui::Response {
     let label_pos = egui::pos2(rect.left(), rect.center().y - label_galley.size().y * 0.5);
     painter.galley(label_pos, label_galley, color::ON_SURFACE);
 
+    let value_t = ease_out_cubic(ui.ctx().animate_bool_with_time(
+        resp.id.with("value_transition"),
+        *on,
+        TRANSITION_FAST,
+    ));
+
     // Track, right-aligned.
     let track_rect = egui::Rect::from_min_size(
         egui::pos2(
@@ -567,36 +616,35 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool, text: &str) -> egui::Response {
         Vec2::new(SWITCH_TRACK_W, SWITCH_TRACK_H),
     );
     let track_rounding = Rounding::same(SWITCH_TRACK_H * 0.5);
-    if *on {
-        painter.rect_filled(track_rect, track_rounding, color::PRIMARY);
-    } else {
-        painter.rect_filled(track_rect, track_rounding, color::SURFACE_CONTAINER_HIGHEST);
-        painter.rect_stroke(track_rect, track_rounding, Stroke::new(1.5, color::OUTLINE));
+    painter.rect_filled(
+        track_rect,
+        track_rounding,
+        lerp_color(color::SURFACE_CONTAINER_HIGHEST, color::PRIMARY, value_t),
+    );
+    if value_t < 1.0 {
+        painter.rect_stroke(
+            track_rect,
+            track_rounding,
+            Stroke::new(
+                1.5 * (1.0 - value_t),
+                with_alpha(color::OUTLINE, 1.0 - value_t),
+            ),
+        );
     }
 
     // Thumb position.
-    let thumb_d = if *on {
-        SWITCH_THUMB_ON
-    } else {
-        SWITCH_THUMB_OFF
-    };
+    let thumb_d = SWITCH_THUMB_OFF + (SWITCH_THUMB_ON - SWITCH_THUMB_OFF) * value_t;
     let thumb_radius = thumb_d * 0.5;
     let inset = (SWITCH_TRACK_H - thumb_d) * 0.5;
-    let thumb_x = if *on {
-        track_rect.right() - inset - thumb_radius
-    } else {
-        track_rect.left() + inset + thumb_radius
-    };
+    let off_x = track_rect.left() + inset + thumb_radius;
+    let on_x = track_rect.right() - inset - thumb_radius;
+    let thumb_x = off_x + (on_x - off_x) * value_t;
     let thumb_center = egui::pos2(thumb_x, track_rect.center().y);
 
     // State layer behind the thumb — small, only when pointer is actually
     // over the switch (not just somewhere in the row).
     if let Some(alpha) = switch_layer_alpha(ui, &resp, track_rect) {
-        let layer_color = if *on {
-            color::PRIMARY
-        } else {
-            color::ON_SURFACE
-        };
+        let layer_color = lerp_color(color::ON_SURFACE, color::PRIMARY, value_t);
         painter.circle_filled(
             thumb_center,
             thumb_radius + 4.0,
@@ -604,11 +652,7 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool, text: &str) -> egui::Response {
         );
     }
 
-    let thumb_color = if *on {
-        color::ON_PRIMARY
-    } else {
-        color::OUTLINE
-    };
+    let thumb_color = lerp_color(color::OUTLINE, color::ON_PRIMARY, value_t);
     painter.circle_filled(thumb_center, thumb_radius, thumb_color);
 
     resp
@@ -831,23 +875,30 @@ pub fn modal_dialog<R>(
 ) -> ModalResult<R> {
     // Dimmed backdrop that also captures clicks behind the modal.
     let screen = ctx.screen_rect();
+    let open_t = modal_open_t(ctx, egui::Id::new((id, "open_transition")));
     egui::Area::new(egui::Id::new((id, "backdrop")))
         .order(egui::Order::Middle)
         .fixed_pos(screen.left_top())
+        .fade_in(false)
         .show(ctx, |ui| {
             let resp = ui.allocate_response(screen.size(), egui::Sense::click());
             ui.painter().rect_filled(
                 resp.rect,
                 Rounding::ZERO,
-                Color32::from_black_alpha(modal::BACKDROP_ALPHA),
+                Color32::from_black_alpha((modal::BACKDROP_ALPHA as f32 * open_t) as u8),
             );
         });
 
     let mut close_requested = false;
     let area = egui::Area::new(egui::Id::new(id))
         .order(egui::Order::Foreground)
-        .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+        .anchor(
+            egui::Align2::CENTER_CENTER,
+            Vec2::new(0.0, -8.0 * (1.0 - open_t)),
+        )
+        .fade_in(false)
         .show(ctx, |ui| {
+            ui.multiply_opacity(open_t);
             modal_frame()
                 .show(ui, |ui| {
                     ui.set_width(width);
@@ -897,23 +948,30 @@ pub fn modal_dialog_sized<R>(
     add_contents: impl FnOnce(&mut egui::Ui, f32) -> R,
 ) -> ModalResult<R> {
     let screen = ctx.screen_rect();
+    let open_t = modal_open_t(ctx, egui::Id::new((id, "open_transition")));
     egui::Area::new(egui::Id::new((id, "backdrop")))
         .order(egui::Order::Middle)
         .fixed_pos(screen.left_top())
+        .fade_in(false)
         .show(ctx, |ui| {
             let resp = ui.allocate_response(screen.size(), egui::Sense::click());
             ui.painter().rect_filled(
                 resp.rect,
                 Rounding::ZERO,
-                Color32::from_black_alpha(modal::BACKDROP_ALPHA),
+                Color32::from_black_alpha((modal::BACKDROP_ALPHA as f32 * open_t) as u8),
             );
         });
 
     let mut close_requested = false;
     let area = egui::Area::new(egui::Id::new(id))
         .order(egui::Order::Foreground)
-        .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+        .anchor(
+            egui::Align2::CENTER_CENTER,
+            Vec2::new(0.0, -8.0 * (1.0 - open_t)),
+        )
+        .fade_in(false)
         .show(ctx, |ui| {
+            ui.multiply_opacity(open_t);
             modal_frame_with_margin(frame_inner_margin)
                 .show(ui, |ui| {
                     ui.set_width(width);

@@ -196,25 +196,33 @@ fn popup_combo<T>(
     render_items: impl FnOnce(&mut egui::Ui) -> Option<T>,
 ) -> Option<T> {
     let popup_id = ui.make_persistent_id(id_source);
-    let is_open = ui.memory(|m| m.is_popup_open(popup_id));
+    let mut is_open = ui.memory(|m| m.is_popup_open(popup_id));
 
     let response = ui.allocate_response(egui::vec2(width, height), egui::Sense::click());
     let rect = response.rect;
     let painter = ui.painter().clone();
 
+    if response.clicked() {
+        ui.memory_mut(|m| m.toggle_popup(popup_id));
+        is_open = ui.memory(|m| m.is_popup_open(popup_id));
+    }
+
+    let open_t = theme::ease_out_cubic(ui.ctx().animate_bool_with_time(
+        popup_id.with("open_transition"),
+        is_open,
+        theme::TRANSITION_POPUP,
+    ));
+
     let outline = egui::Stroke::new(1.0, color::OUTLINE_VARIANT);
     let surface = color::SURFACE_CONTAINER;
 
-    // Closed-combo rounding: bottom corners go flat when popup is open.
-    let combo_rounding = if is_open {
-        egui::Rounding {
-            nw: radius::SM,
-            ne: radius::SM,
-            sw: 0.0,
-            se: 0.0,
-        }
-    } else {
-        egui::Rounding::same(radius::SM)
+    // Closed-combo rounding: bottom corners ease flat as the popup opens.
+    let bottom_radius = radius::SM * (1.0 - open_t);
+    let combo_rounding = egui::Rounding {
+        nw: radius::SM,
+        ne: radius::SM,
+        sw: bottom_radius,
+        se: bottom_radius,
     };
     painter.rect(rect, combo_rounding, surface, outline);
     if response.hovered() && !is_open {
@@ -233,10 +241,19 @@ fn popup_combo<T>(
     let chev_w = 9.0;
     let chev_h = 5.0;
     let chev_cx = inner.right() - chev_w * 0.5;
+    let chev_center = egui::pos2(chev_cx, center_y);
+    let angle = std::f32::consts::PI * open_t;
+    let (sin, cos) = angle.sin_cos();
+    let rotate = |dx: f32, dy: f32| {
+        egui::pos2(
+            chev_center.x + dx * cos - dy * sin,
+            chev_center.y + dx * sin + dy * cos,
+        )
+    };
     let chev = vec![
-        egui::pos2(chev_cx - chev_w * 0.5, center_y - chev_h * 0.5),
-        egui::pos2(chev_cx + chev_w * 0.5, center_y - chev_h * 0.5),
-        egui::pos2(chev_cx, center_y + chev_h * 0.5),
+        rotate(-chev_w * 0.5, -chev_h * 0.5),
+        rotate(chev_w * 0.5, -chev_h * 0.5),
+        rotate(0.0, chev_h * 0.5),
     ];
     painter.add(egui::Shape::convex_polygon(
         chev,
@@ -247,18 +264,17 @@ fn popup_combo<T>(
 
     paint_closed(ui, &painter, inner, content_right);
 
-    if response.clicked() {
-        ui.memory_mut(|m| m.toggle_popup(popup_id));
-    }
-
     let mut picked: Option<T> = None;
     let mut close_requested = false;
 
-    if is_open {
+    if is_open || open_t > 0.01 {
+        let popup_offset = egui::vec2(0.0, -6.0 * (1.0 - open_t));
         let area = egui::Area::new(popup_id.with("area"))
             .order(egui::Order::Foreground)
-            .fixed_pos(rect.left_bottom())
+            .fixed_pos(rect.left_bottom() + popup_offset)
+            .fade_in(false)
             .show(ui.ctx(), |ui| {
+                ui.multiply_opacity(open_t);
                 egui::Frame::none()
                     .fill(surface)
                     .stroke(outline)

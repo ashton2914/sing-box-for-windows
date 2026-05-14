@@ -65,7 +65,9 @@ fn main() -> eframe::Result<()> {
             // remain readable. A too-small minimum window forces that
             // dialog into an awkward clipped layout, so keep the app's
             // minimum viewport at a size where the modal can breathe.
-            .with_inner_size([720.0, 860.0])
+            // Start at that same size so first launch matches the
+            // smallest supported layout.
+            .with_inner_size([700.0, 840.0])
             .with_min_inner_size([700.0, 840.0])
             .with_title(APP_TITLE)
             .with_icon(load_icon())
