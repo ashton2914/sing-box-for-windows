@@ -28,11 +28,12 @@ impl Default for MainScrollState {
 }
 
 const MAIN_SCROLL_BOTTOM_MARGIN: f32 = 12.0;
-const SETTINGS_INPUT_HEIGHT: f32 = 16.0;
+const SETTINGS_INPUT_HEIGHT: f32 = 28.0;
 const SETTINGS_INPUT_SHORT: [f32; 2] = [72.0, SETTINGS_INPUT_HEIGHT];
 const SETTINGS_INPUT_MEDIUM: [f32; 2] = [104.0, SETTINGS_INPUT_HEIGHT];
 const SETTINGS_INPUT_ADDRESS: [f32; 2] = [180.0, SETTINGS_INPUT_HEIGHT];
-const SETTINGS_ROW_HEIGHT: f32 = SETTINGS_INPUT_HEIGHT;
+const SETTINGS_ROW_HEIGHT: f32 = 28.0;
+const SETTINGS_ACTION_ROW_HEIGHT: f32 = 28.0;
 const SETTINGS_CHILD_INDENT: f32 = 18.0;
 
 fn log_scroll_blocking_rect_id() -> egui::Id {
@@ -51,8 +52,12 @@ fn modal_window_open(app: &App) -> bool {
 }
 
 fn settings_row(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
+    settings_row_sized(ui, SETTINGS_ROW_HEIGHT, add_contents);
+}
+
+fn settings_row_sized(ui: &mut egui::Ui, height: f32, add_contents: impl FnOnce(&mut egui::Ui)) {
     ui.allocate_ui_with_layout(
-        egui::vec2(ui.available_width(), SETTINGS_ROW_HEIGHT),
+        egui::vec2(ui.available_width(), height),
         egui::Layout::left_to_right(egui::Align::Center),
         add_contents,
     );
@@ -1021,11 +1026,7 @@ fn settings_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
             // Layout matches the switch rows below: label flush-left,
             // small pill flush-right.
             settings_row(ui, |ui| {
-                ui.label(
-                    egui::RichText::new("Theme")
-                        .color(theme::color::on_surface())
-                        .size(14.0),
-                );
+                ui.label(theme::setting_label("Theme"));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if theme::segmented(
                         ui,
@@ -1138,14 +1139,12 @@ fn settings_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
             #[cfg(windows)]
             {
                 ui.add_space(2.0);
-                settings_row(ui, |ui| {
+                settings_row_sized(ui, SETTINGS_ACTION_ROW_HEIGHT, |ui| {
                     let label = ui.label(theme::setting_label(crate::core::loopback::DISPLAY_NAME));
                     label.on_hover_text(crate::core::loopback::HOVER_TEXT);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Keep this as a compact, low-emphasis row action
-                        // rather than a full tonal pill. The fixed width
-                        // still prevents right-to-left reflow when the
-                        // label flips "Open" ↔ "Opening…".
+                        // rather than a full tonal pill.
                         let label = if app.loopback_busy {
                             "Opening\u{2026}"
                         } else {
@@ -1154,11 +1153,11 @@ fn settings_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
                         let loopback_button = egui::Button::new(
                             egui::RichText::new(label)
                                 .color(color::on_surface())
-                                .size(12.5),
+                                .size(12.0),
                         )
                         .fill(color::surface_container_high())
                         .rounding(egui::Rounding::same(radius::FULL))
-                        .min_size(egui::Vec2::new(76.0, 24.0))
+                        .min_size(egui::Vec2::new(56.0, 22.0))
                         .stroke(egui::Stroke::new(1.0, color::outline_variant()));
                         let resp = ui.add(loopback_button).on_hover_text(
                             "Launch EnableLoopback.exe (downloads from Telerik on first use; UAC \

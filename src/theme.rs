@@ -1457,7 +1457,9 @@ pub fn setting_input_singleline_sized(
     let resp = ui.add_sized(
         size,
         egui::TextEdit::singleline(text)
+            .font(egui::FontId::proportional(SWITCH_LABEL_FONT))
             .hint_text(hint_text(hint))
+            .vertical_align(egui::Align::Center)
             .margin(INPUT_MARGIN),
     );
     keep_focus_on_ime_enter(ui.ctx(), &resp);
