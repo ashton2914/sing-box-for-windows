@@ -31,6 +31,7 @@ const SETTINGS_INPUT_HEIGHT: f32 = 32.0;
 const SETTINGS_INPUT_SHORT: [f32; 2] = [72.0, SETTINGS_INPUT_HEIGHT];
 const SETTINGS_INPUT_MEDIUM: [f32; 2] = [104.0, SETTINGS_INPUT_HEIGHT];
 const SETTINGS_INPUT_ADDRESS: [f32; 2] = [180.0, SETTINGS_INPUT_HEIGHT];
+const SETTINGS_ROW_HEIGHT: f32 = SETTINGS_INPUT_HEIGHT;
 
 fn log_scroll_blocking_rect_id() -> egui::Id {
     egui::Id::new("log_scroll_blocking_rect")
@@ -45,6 +46,14 @@ fn modal_window_open(app: &App) -> bool {
         || app.delete_confirm.is_some()
         || app.destroy_confirm_open
         || app.about_open
+}
+
+fn settings_row(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), SETTINGS_ROW_HEIGHT),
+        egui::Layout::left_to_right(egui::Align::Center),
+        add_contents,
+    );
 }
 
 pub fn show(ui: &mut egui::Ui, app: &mut App) {
@@ -623,7 +632,7 @@ fn inbound_override_settings(ui: &mut egui::Ui, app: &mut App) {
     }
 
     if app.settings.inbound_override.enabled {
-        ui.horizontal(|ui| {
+        settings_row(ui, |ui| {
             ui.label(theme::setting_label("Override inbound with"));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if inbound_override_kind_combo(ui, &mut app.settings.inbound_override.kind, 132.0)
@@ -636,7 +645,7 @@ fn inbound_override_settings(ui: &mut egui::Ui, app: &mut App) {
 
         match app.settings.inbound_override.kind {
             InboundOverrideKind::MixedIn => {
-                ui.horizontal(|ui| {
+                settings_row(ui, |ui| {
                     ui.label(theme::setting_label("Listen address"));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if theme::setting_input_singleline_sized(
@@ -651,7 +660,7 @@ fn inbound_override_settings(ui: &mut egui::Ui, app: &mut App) {
                         }
                     });
                 });
-                ui.horizontal(|ui| {
+                settings_row(ui, |ui| {
                     ui.label(theme::setting_label("Listen port"));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let port_hint = DEFAULT_MIXED_LISTEN_PORT.to_string();
@@ -669,7 +678,7 @@ fn inbound_override_settings(ui: &mut egui::Ui, app: &mut App) {
                 });
             }
             InboundOverrideKind::Tun => {
-                ui.horizontal(|ui| {
+                settings_row(ui, |ui| {
                     ui.label(theme::setting_label("MTU"));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if theme::setting_input_singleline_sized(
@@ -894,8 +903,7 @@ fn settings_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
             // immediately re-skin everything else they're about to read.
             // Layout matches the switch rows below: label flush-left,
             // small pill flush-right.
-            ui.horizontal(|ui| {
-                ui.set_min_height(28.0);
+            settings_row(ui, |ui| {
                 ui.label(
                     egui::RichText::new("Theme")
                         .color(theme::color::on_surface())
@@ -956,7 +964,7 @@ fn settings_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
                 s_changed = true;
             }
             if app.settings.auto_update {
-                ui.horizontal(|ui| {
+                settings_row(ui, |ui| {
                     ui.label(theme::setting_label("Auto update interval (hours)"));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let interval_hint = DEFAULT_UPDATE_INTERVAL_HOURS.to_string();
@@ -1013,7 +1021,7 @@ fn settings_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
             #[cfg(windows)]
             {
                 ui.add_space(2.0);
-                ui.horizontal(|ui| {
+                settings_row(ui, |ui| {
                     let label = ui.label(theme::setting_label(crate::core::loopback::DISPLAY_NAME));
                     label.on_hover_text(crate::core::loopback::HOVER_TEXT);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

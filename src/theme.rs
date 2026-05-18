@@ -774,7 +774,7 @@ const SWITCH_TRACK_H: f32 = 20.0;
 const SWITCH_THUMB_OFF: f32 = 12.0;
 const SWITCH_THUMB_ON: f32 = 16.0;
 const SWITCH_LABEL_FONT: f32 = 13.0;
-const SWITCH_ROW_H: f32 = 28.0;
+const SWITCH_ROW_H: f32 = 32.0;
 const SWITCH_TRANSITION: f32 = 0.24;
 
 pub fn switch(ui: &mut egui::Ui, on: &mut bool, text: &str) -> egui::Response {
@@ -1459,6 +1459,7 @@ pub fn input_singleline_sized(
         size,
         egui::TextEdit::singleline(text)
             .hint_text(hint_text(hint))
+            .vertical_align(egui::Align::Center)
             .margin(INPUT_MARGIN),
     );
     keep_focus_on_ime_enter(ui.ctx(), &resp);
