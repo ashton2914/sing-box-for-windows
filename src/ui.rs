@@ -2071,13 +2071,34 @@ fn destroy_confirm_modal(ctx: &egui::Context, app: &mut App) {
     if !app.destroy_confirm_open {
         return;
     }
-    let result = theme::modal_dialog(
-        ctx,
-        "destroy_confirm_modal",
-        "Destroy working directory",
-        360.0,
-        true,
-        |ui, close| {
+    // When sing-box is running, the working directory can't be safely
+    // purged (files are locked, and tearing them out from under a live
+    // process is asking for trouble). Rather than showing the normal
+    // confirm dialog with a disabled "Destroy" button — which reads as
+    // a broken / missing button — surface a dedicated prompt that
+    // explains the situation and asks the user to stop sing-box first.
+    let running = app.proc.is_running();
+    let (title, width) = if running {
+        ("Stop sing-box first", 360.0)
+    } else {
+        ("Destroy working directory", 360.0)
+    };
+    let result = theme::modal_dialog(ctx, "destroy_confirm_modal", title, width, true, |ui, close| {
+        if running {
+            ui.label(
+                egui::RichText::new(
+                    "Sing-box is still running. Please stop it before \
+                     destroying the working directory.",
+                )
+                .color(color::on_surface()),
+            );
+            ui.add_space(14.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.add(theme::filled_button("OK")).clicked() {
+                    *close = true;
+                }
+            });
+        } else {
             ui.label(
                 egui::RichText::new(
                     "This will clear the current working directory. \
@@ -2087,11 +2108,10 @@ fn destroy_confirm_modal(ctx: &egui::Context, app: &mut App) {
             );
             ui.add_space(14.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let running = app.proc.is_running();
-                let btn = ui
-                    .add_enabled(!running, theme::destructive_filled_button("Destroy"))
-                    .on_disabled_hover_text("Stop sing-box first");
-                if btn.clicked() {
+                if ui
+                    .add(theme::destructive_filled_button("Destroy"))
+                    .clicked()
+                {
                     match shell::purge_directory(&app.paths.working_dir) {
                         Ok(()) => {
                             app.last_info = Some("Working directory cleared".into());
@@ -2106,8 +2126,8 @@ fn destroy_confirm_modal(ctx: &egui::Context, app: &mut App) {
                     *close = true;
                 }
             });
-        },
-    );
+        }
+    });
     if result.close_requested {
         app.destroy_confirm_open = false;
     }

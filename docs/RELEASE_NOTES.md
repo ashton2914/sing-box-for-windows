@@ -1,5 +1,11 @@
 # Release Notes
 
+## v0.1.6 - 2026-05-18
+
+### Fixed
+
+- Fixed the "Destroy Working Dir" confirm dialog appearing to be missing its primary button while sing-box was still running. The dialog now switches to a dedicated "Stop sing-box first" prompt that clearly explains why the action is blocked and offers a single OK button, instead of showing a silently-disabled Destroy button.
+
 ## v0.1.5 - 2026-05-18
 
 ### Added
