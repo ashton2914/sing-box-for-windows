@@ -1418,10 +1418,23 @@ fn run_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
                 // the default floating style uses foreground text color for
                 // handles, which stays bright even after `floating = false`.
                 {
+                    let (inactive, hovered, active) = if theme::is_dark() {
+                        (
+                            theme::with_alpha(color::outline_variant(), 0.55),
+                            theme::with_alpha(color::outline_variant(), 0.85),
+                            color::outline_variant(),
+                        )
+                    } else {
+                        (
+                            egui::Color32::from_rgb(214, 214, 218),
+                            egui::Color32::from_rgb(198, 198, 204),
+                            egui::Color32::from_rgb(180, 180, 188),
+                        )
+                    };
                     let visuals = &mut ui.visuals_mut().widgets;
-                    visuals.inactive.bg_fill = theme::with_alpha(color::outline_variant(), 0.55);
-                    visuals.hovered.bg_fill = theme::with_alpha(color::outline_variant(), 0.85);
-                    visuals.active.bg_fill = color::outline_variant();
+                    visuals.inactive.bg_fill = inactive;
+                    visuals.hovered.bg_fill = hovered;
+                    visuals.active.bg_fill = active;
                 }
                 {
                     let scroll = &mut ui.spacing_mut().scroll;
