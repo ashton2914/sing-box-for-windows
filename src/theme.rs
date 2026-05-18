@@ -1265,12 +1265,12 @@ pub mod modal {
     pub const TITLE_FONT: f32 = 16.0;
     pub const HEADER_GAP: f32 = 12.0;
     pub const INNER_MARGIN: f32 = 16.0;
-    pub const SHADOW_BLUR: f32 = 24.0;
+    pub const SHADOW_BLUR: f32 = 16.0;
     pub const BACKDROP_ALPHA: u8 = 80;
 }
 
 /// The standard modal frame: SURFACE_CONTAINER_HIGH fill, LG rounding,
-/// OUTLINE_VARIANT 1dp stroke, deep soft shadow.
+/// OUTLINE_VARIANT 1dp stroke, soft shadow.
 pub fn modal_frame() -> egui::Frame {
     modal_frame_with_margin(modal::INNER_MARGIN)
 }
@@ -1292,10 +1292,10 @@ fn modal_frame_with_margin_opacity(inner_margin: f32, opacity: f32) -> egui::Fra
             with_alpha(color::outline_variant(), opacity),
         ))
         .shadow(egui::epaint::Shadow {
-            offset: Vec2::new(0.0, 8.0),
+            offset: Vec2::new(0.0, 4.0),
             blur: modal::SHADOW_BLUR,
             spread: 0.0,
-            color: Color32::from_black_alpha((120.0 * opacity.clamp(0.0, 1.0)) as u8),
+            color: Color32::from_black_alpha((72.0 * opacity.clamp(0.0, 1.0)) as u8),
         })
 }
 

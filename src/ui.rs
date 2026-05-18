@@ -69,18 +69,21 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
                 } else {
                     requested.max(0.0)
                 };
-            } else if viewport_rect.height() < scroll_state.viewport_height - 0.5 {
-                scroll_state.offset_y = scroll_state.offset_y.min(max_offset);
             }
 
+            let content_layout_height = if scroll_state.content_height > 0.0 {
+                scroll_state
+                    .content_height
+                    .max(scroll_state.offset_y + viewport_rect.height())
+            } else {
+                viewport_rect.height()
+            };
             let content_rect = egui::Rect::from_min_size(
                 viewport_rect.left_top() - egui::vec2(0.0, scroll_state.offset_y),
-                egui::vec2(
-                    viewport_rect.width(),
-                    scroll_state.content_height.max(viewport_rect.height()),
-                ),
+                egui::vec2(viewport_rect.width(), content_layout_height),
             );
             let mut content_ui = ui.child_ui(content_rect, *ui.layout(), None);
+            let content_top = content_rect.top();
 
             let content = egui::Frame::none()
                 .inner_margin(egui::Margin {
@@ -95,10 +98,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
                     config_card(ui, app, card_width);
                     ui.add_space(8.0);
                     settings_card(ui, app, card_width);
+                    ui.min_rect().bottom() - content_top + MAIN_SCROLL_BOTTOM_MARGIN
                 });
 
             scroll_state.viewport_height = viewport_rect.height();
-            scroll_state.content_height = content.response.rect.height();
+            scroll_state.content_height = content.inner.max(0.0);
             if scroll_state.offset_y <= 0.5 {
                 scroll_state.offset_y = 0.0;
             }
