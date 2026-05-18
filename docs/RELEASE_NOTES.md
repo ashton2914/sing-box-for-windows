@@ -1,5 +1,29 @@
 # Release Notes
 
+## v0.1.5 - 2026-05-18
+
+### Added
+
+- Added settings controls for runtime inbound overrides, including mixed-in and TUN modes.
+- Added runtime log override settings for disabled state, level, timestamps, and optional log-file output.
+- Added a Theme selector with Dark, Light, and System modes.
+- Added quick links to the sing-box GitHub repository and documentation from the Settings page.
+- Added log-panel controls for pause/resume, clear, current log level, uptime, and Clash WebUI launch when available.
+
+### Changed
+
+- Restored the native Windows title bar and window frame so Snap, edge resize, maximize, and restore behavior follow Windows defaults.
+- Refined Settings density, control alignment, input sizing, dividers, dropdown highlighting, and light/dark scrollbar colors.
+- Reduced log status overhead by caching the parsed selected config and refreshing it only when the file changes.
+- Deduplicated repeated log-level labels and settings external-link button handling.
+
+### Fixed
+
+- Fixed log text selection interfering with scroll interaction by rendering log entries as non-selectable labels.
+- Fixed always-visible log scrollbars using overly bright handle colors.
+- Fixed Settings labels not vertically aligning with text inputs, segmented controls, and compact row actions.
+- Fixed several custom frameless-window interaction quirks by returning window movement and resizing to the OS frame.
+
 ## v0.1.4 - 2026-05-14
 
 ### Fixed
