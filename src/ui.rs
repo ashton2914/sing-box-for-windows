@@ -1224,24 +1224,13 @@ fn settings_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
 
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                if ui
-                    .add(theme::tonal_button("sing-box GitHub"))
-                    .on_hover_text("Open https://github.com/SagerNet/sing-box")
-                    .clicked()
-                {
-                    if let Err(e) = shell::open_url("https://github.com/SagerNet/sing-box") {
-                        app.last_error = Some(format!("Open sing-box GitHub failed: {e}"));
-                    }
-                }
-                if ui
-                    .add(theme::tonal_button("sing-box Docs"))
-                    .on_hover_text("Open https://sing-box.sagernet.org/")
-                    .clicked()
-                {
-                    if let Err(e) = shell::open_url("https://sing-box.sagernet.org/") {
-                        app.last_error = Some(format!("Open sing-box docs failed: {e}"));
-                    }
-                }
+                external_link_button(
+                    ui,
+                    app,
+                    "sing-box GitHub",
+                    "https://github.com/SagerNet/sing-box",
+                );
+                external_link_button(ui, app, "sing-box Docs", "https://sing-box.sagernet.org/");
                 if ui.add(theme::tonal_button("Open Working Dir")).clicked() {
                     if let Err(e) = shell::open(&app.paths.working_dir) {
                         app.last_error = Some(e.to_string());
@@ -1294,6 +1283,18 @@ fn settings_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
             });
         });
     });
+}
+
+fn external_link_button(ui: &mut egui::Ui, app: &mut App, label: &'static str, url: &'static str) {
+    if ui
+        .add(theme::tonal_button(label))
+        .on_hover_text(format!("Open {url}"))
+        .clicked()
+    {
+        if let Err(e) = shell::open_url(url) {
+            app.last_error = Some(format!("Open {label} failed: {e}"));
+        }
+    }
 }
 
 fn subtle_divider(ui: &mut egui::Ui) {
