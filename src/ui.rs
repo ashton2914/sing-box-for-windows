@@ -3,7 +3,7 @@ use eframe::egui;
 use crate::app::{App, BgCmd, SourceKind};
 use crate::config::entry::Source;
 use crate::config::settings::{
-    InboundOverrideKind, DEFAULT_MIXED_LISTEN, DEFAULT_MIXED_LISTEN_PORT,
+    InboundOverrideKind, LogLevel, DEFAULT_MIXED_LISTEN, DEFAULT_MIXED_LISTEN_PORT,
     DEFAULT_UPDATE_INTERVAL_HOURS,
 };
 use crate::core::shell;
@@ -32,6 +32,7 @@ const SETTINGS_INPUT_SHORT: [f32; 2] = [72.0, SETTINGS_INPUT_HEIGHT];
 const SETTINGS_INPUT_MEDIUM: [f32; 2] = [104.0, SETTINGS_INPUT_HEIGHT];
 const SETTINGS_INPUT_ADDRESS: [f32; 2] = [180.0, SETTINGS_INPUT_HEIGHT];
 const SETTINGS_ROW_HEIGHT: f32 = SETTINGS_INPUT_HEIGHT;
+const SETTINGS_CHILD_INDENT: f32 = 18.0;
 
 fn log_scroll_blocking_rect_id() -> egui::Id {
     egui::Id::new("log_scroll_blocking_rect")
@@ -54,6 +55,13 @@ fn settings_row(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
         egui::Layout::left_to_right(egui::Align::Center),
         add_contents,
     );
+}
+
+fn settings_child_row(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
+    settings_row(ui, |ui| {
+        ui.add_space(SETTINGS_CHILD_INDENT);
+        add_contents(ui);
+    });
 }
 
 pub fn show(ui: &mut egui::Ui, app: &mut App) {
@@ -632,7 +640,7 @@ fn inbound_override_settings(ui: &mut egui::Ui, app: &mut App) {
     }
 
     if app.settings.inbound_override.enabled {
-        settings_row(ui, |ui| {
+        settings_child_row(ui, |ui| {
             ui.label(theme::setting_label("Override inbound with"));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if inbound_override_kind_combo(ui, &mut app.settings.inbound_override.kind, 132.0)
@@ -645,7 +653,7 @@ fn inbound_override_settings(ui: &mut egui::Ui, app: &mut App) {
 
         match app.settings.inbound_override.kind {
             InboundOverrideKind::MixedIn => {
-                settings_row(ui, |ui| {
+                settings_child_row(ui, |ui| {
                     ui.label(theme::setting_label("Listen address"));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if theme::setting_input_singleline_sized(
@@ -660,7 +668,7 @@ fn inbound_override_settings(ui: &mut egui::Ui, app: &mut App) {
                         }
                     });
                 });
-                settings_row(ui, |ui| {
+                settings_child_row(ui, |ui| {
                     ui.label(theme::setting_label("Listen port"));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let port_hint = DEFAULT_MIXED_LISTEN_PORT.to_string();
@@ -678,7 +686,7 @@ fn inbound_override_settings(ui: &mut egui::Ui, app: &mut App) {
                 });
             }
             InboundOverrideKind::Tun => {
-                settings_row(ui, |ui| {
+                settings_child_row(ui, |ui| {
                     ui.label(theme::setting_label("MTU"));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if theme::setting_input_singleline_sized(
@@ -693,15 +701,17 @@ fn inbound_override_settings(ui: &mut egui::Ui, app: &mut App) {
                         }
                     });
                 });
-                if theme::switch(
-                    ui,
-                    &mut app.settings.inbound_override.tun_endpoint_independent_nat,
-                    "Endpoint independent NAT",
-                )
-                .changed()
-                {
-                    changed = true;
-                }
+                settings_child_row(ui, |ui| {
+                    if theme::switch(
+                        ui,
+                        &mut app.settings.inbound_override.tun_endpoint_independent_nat,
+                        "Endpoint independent NAT",
+                    )
+                    .changed()
+                    {
+                        changed = true;
+                    }
+                });
             }
         }
     }
@@ -775,6 +785,120 @@ fn inbound_override_kind_label(kind: InboundOverrideKind) -> &'static str {
     match kind {
         InboundOverrideKind::MixedIn => "mixedin",
         InboundOverrideKind::Tun => "tun",
+    }
+}
+
+fn log_override_settings(ui: &mut egui::Ui, app: &mut App) {
+    let mut changed = false;
+    if theme::switch(
+        ui,
+        &mut app.settings.log_override.enabled,
+        "Override log configuration",
+    )
+    .changed()
+    {
+        changed = true;
+    }
+
+    if app.settings.log_override.enabled {
+        settings_child_row(ui, |ui| {
+            if theme::switch(ui, &mut app.settings.log_override.disabled, "Disabled").changed() {
+                changed = true;
+            }
+        });
+        settings_child_row(ui, |ui| {
+            ui.label(theme::setting_label("Level"));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if log_level_combo(ui, &mut app.settings.log_override.level, 132.0).is_some() {
+                    changed = true;
+                }
+            });
+        });
+        settings_child_row(ui, |ui| {
+            if theme::switch(ui, &mut app.settings.log_override.save_logs, "Save logs").changed() {
+                changed = true;
+            }
+        });
+    }
+
+    if changed {
+        app.persist_settings();
+    }
+}
+
+fn log_level_combo(ui: &mut egui::Ui, value: &mut LogLevel, width: f32) -> Option<LogLevel> {
+    let current = *value;
+    let picked = popup_combo(
+        ui,
+        "log_level_combo",
+        width,
+        28.0,
+        |ui, painter, inner, _content_right| {
+            let text = log_level_label(current);
+            let galley = ui.fonts(|f| {
+                f.layout_no_wrap(
+                    text.to_owned(),
+                    egui::FontId::proportional(13.0),
+                    color::on_surface(),
+                )
+            });
+            painter.galley(
+                egui::pos2(inner.left(), inner.center().y - galley.size().y * 0.5),
+                galley,
+                color::on_surface(),
+            );
+        },
+        |ui| {
+            for option in [
+                LogLevel::Trace,
+                LogLevel::Debug,
+                LogLevel::Info,
+                LogLevel::Warn,
+                LogLevel::Error,
+                LogLevel::Fatal,
+                LogLevel::Panic,
+            ] {
+                let selected = current == option;
+                let clicked = popup_combo_row(ui, 28.0, selected, |ui, painter, inner| {
+                    let text = log_level_label(option);
+                    let galley = ui.fonts(|f| {
+                        f.layout_no_wrap(
+                            text.to_owned(),
+                            egui::FontId::proportional(13.0),
+                            color::on_surface(),
+                        )
+                    });
+                    painter.galley(
+                        egui::pos2(inner.left(), inner.center().y - galley.size().y * 0.5),
+                        galley,
+                        color::on_surface(),
+                    );
+                });
+                if clicked {
+                    return Some(option);
+                }
+            }
+            None
+        },
+    );
+    if let Some(picked) = picked {
+        if *value != picked {
+            *value = picked;
+            return Some(picked);
+        }
+    }
+    None
+}
+
+fn log_level_label(level: LogLevel) -> &'static str {
+    match level {
+        LogLevel::Trace => "trace",
+        LogLevel::Debug => "debug",
+        LogLevel::Info => "info",
+        LogLevel::Warn => "warn",
+        LogLevel::Error => "error",
+        LogLevel::Fatal => "fatal",
+        LogLevel::Panic => "panic",
     }
 }
 
@@ -864,28 +988,30 @@ fn admin_mode_toggles(ui: &mut egui::Ui, app: &mut App) {
     // -- Second toggle: persistence (only visible when actually elevated).
     if elevated {
         let prev = app.settings.always_admin;
-        let resp = theme::switch(
-            ui,
-            &mut app.settings.always_admin,
-            "Always enable administrator mode",
-        );
-        if resp.changed() {
-            let now = app.settings.always_admin;
-            app.persist_settings();
-            if now && !prev {
-                app.last_info = Some(
-                    "Persistent admin enabled. Future launches will start as \
-                     Administrator with no UAC prompt."
-                        .into(),
-                );
-            } else if !now && prev {
-                app.last_info = Some(
-                    "Persistent admin disabled. Future launches will run as \
-                     standard user."
-                        .into(),
-                );
+        settings_child_row(ui, |ui| {
+            let resp = theme::switch(
+                ui,
+                &mut app.settings.always_admin,
+                "Always enable administrator mode",
+            );
+            if resp.changed() {
+                let now = app.settings.always_admin;
+                app.persist_settings();
+                if now && !prev {
+                    app.last_info = Some(
+                        "Persistent admin enabled. Future launches will start as \
+                         Administrator with no UAC prompt."
+                            .into(),
+                    );
+                } else if !now && prev {
+                    app.last_info = Some(
+                        "Persistent admin disabled. Future launches will run as \
+                         standard user."
+                            .into(),
+                    );
+                }
             }
-        }
+        });
     }
 }
 
@@ -964,7 +1090,7 @@ fn settings_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
                 s_changed = true;
             }
             if app.settings.auto_update {
-                settings_row(ui, |ui| {
+                settings_child_row(ui, |ui| {
                     ui.label(theme::setting_label("Auto update interval (hours)"));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let interval_hint = DEFAULT_UPDATE_INTERVAL_HOURS.to_string();
@@ -1077,6 +1203,7 @@ fn settings_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
                 app.persist_settings();
             }
 
+            log_override_settings(ui, app);
             inbound_override_settings(ui, app);
 
             ui.add_space(4.0);
@@ -1223,6 +1350,10 @@ fn elevation_pill(ui: &mut egui::Ui) {
 
 fn run_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
     let running = app.proc.is_running();
+    if running {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_secs(1));
+    }
 
     theme::card_with_width(ui, card_width, |ui| {
         ui.horizontal(|ui| {
@@ -1277,7 +1408,10 @@ fn run_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
         ui.add_space(14.0);
 
         const LOG_INNER_MARGIN: f32 = 10.0;
-        const LOG_HEIGHT: f32 = 200.0;
+        const LOG_HEIGHT: f32 = 400.0;
+        const LOG_TOOLBAR_HEIGHT: f32 = 28.0;
+        const LOG_DIVIDER_HEIGHT: f32 = 1.0;
+        const LOG_BODY_HEIGHT: f32 = LOG_HEIGHT - LOG_TOOLBAR_HEIGHT - LOG_DIVIDER_HEIGHT;
         let log_inner_width = (ui.available_width() - LOG_INNER_MARGIN * 2.0).max(0.0);
 
         let log_frame = egui::Frame::none()
@@ -1306,9 +1440,18 @@ fn run_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
                     scroll.interact_handle_opacity = 0.9;
                 }
 
+                ui.allocate_ui_with_layout(
+                    egui::vec2(log_inner_width, LOG_TOOLBAR_HEIGHT),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        log_status_toolbar(ui, app);
+                    },
+                );
+                log_toolbar_divider(ui, log_inner_width);
+
                 egui::ScrollArea::both()
                     .auto_shrink([false; 2])
-                    .max_height(LOG_HEIGHT)
+                    .max_height(LOG_BODY_HEIGHT)
                     .stick_to_bottom(true)
                     .show(ui, |ui| {
                         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
@@ -1338,6 +1481,58 @@ fn run_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
             data.insert_temp(log_scroll_blocking_rect_id(), log_frame.response.rect);
         });
     });
+}
+
+fn log_status_toolbar(ui: &mut egui::Ui, app: &mut App) {
+    let now = chrono::Local::now().format("%H:%M:%S").to_string();
+    let uptime = app
+        .proc
+        .running_for()
+        .map(format_duration)
+        .unwrap_or_else(|| "stopped".to_owned());
+    let text = format!("Time {now}    Uptime {uptime}");
+
+    ui.label(
+        egui::RichText::new(text)
+            .color(color::on_surface_variant())
+            .size(12.0)
+            .monospace(),
+    );
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let clear = egui::Button::new(
+            egui::RichText::new("Clear")
+                .color(color::primary())
+                .size(12.0),
+        )
+        .fill(egui::Color32::TRANSPARENT)
+        .rounding(egui::Rounding::same(radius::FULL))
+        .min_size(egui::vec2(40.0, 22.0))
+        .stroke(egui::Stroke::NONE);
+
+        if ui
+            .add_enabled(!app.logs.is_empty(), clear)
+            .on_hover_text("Clear displayed logs")
+            .clicked()
+        {
+            app.logs.clear();
+        }
+    });
+}
+
+fn log_toolbar_divider(ui: &mut egui::Ui, width: f32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 1.0), egui::Sense::hover());
+    ui.painter().line_segment(
+        [rect.left_center(), rect.right_center()],
+        egui::Stroke::new(1.0, theme::with_alpha(color::outline_variant(), 0.55)),
+    );
+}
+
+fn format_duration(duration: std::time::Duration) -> String {
+    let total = duration.as_secs();
+    let hours = total / 3600;
+    let minutes = (total % 3600) / 60;
+    let seconds = total % 60;
+    format!("{hours:02}:{minutes:02}:{seconds:02}")
 }
 
 fn status_text_block(ui: &mut egui::Ui, status_text: &str, status_color: egui::Color32) {

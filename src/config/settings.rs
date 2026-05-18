@@ -17,6 +17,39 @@ pub enum InboundOverrideKind {
     Tun,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    Trace,
+    Debug,
+    #[default]
+    Info,
+    Warn,
+    Error,
+    Fatal,
+    Panic,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LogOverrideSettings {
+    pub enabled: bool,
+    pub disabled: bool,
+    pub level: LogLevel,
+    pub save_logs: bool,
+}
+
+impl Default for LogOverrideSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            disabled: false,
+            level: LogLevel::Info,
+            save_logs: false,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct InboundOverrideSettings {
@@ -105,6 +138,9 @@ pub struct Settings {
     /// selected config is never modified; the launcher writes a copied
     /// runtime config under the sing-box working directory before start.
     pub inbound_override: InboundOverrideSettings,
+    /// Optional runtime-only sing-box log override. Fixed fields like
+    /// `timestamp` and the output path are supplied by the launcher.
+    pub log_override: LogOverrideSettings,
 }
 
 impl Default for Settings {
@@ -121,6 +157,7 @@ impl Default for Settings {
             silent_start: false,
             theme_mode: crate::theme::ThemeMode::System,
             inbound_override: InboundOverrideSettings::default(),
+            log_override: LogOverrideSettings::default(),
         }
     }
 }

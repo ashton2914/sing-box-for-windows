@@ -125,6 +125,46 @@ pub fn window_rect(hwnd: usize) -> Option<WindowRect> {
     })
 }
 
+pub fn window_restore_rect(hwnd: usize) -> Option<WindowRect> {
+    use windows_sys::Win32::Foundation::{POINT, RECT};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowPlacement, WINDOWPLACEMENT};
+
+    let mut placement = WINDOWPLACEMENT {
+        length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+        flags: 0,
+        showCmd: 0,
+        ptMinPosition: POINT { x: 0, y: 0 },
+        ptMaxPosition: POINT { x: 0, y: 0 },
+        rcNormalPosition: RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        },
+    };
+    let ok = unsafe { GetWindowPlacement(hwnd as _, &mut placement) } != 0;
+    ok.then_some(WindowRect {
+        left: placement.rcNormalPosition.left,
+        top: placement.rcNormalPosition.top,
+        right: placement.rcNormalPosition.right,
+        bottom: placement.rcNormalPosition.bottom,
+    })
+}
+
+pub fn is_window_maximized(hwnd: usize) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::IsZoomed;
+
+    unsafe { IsZoomed(hwnd as _) != 0 }
+}
+
+pub fn restore_window(hwnd: usize) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_RESTORE};
+
+    unsafe {
+        ShowWindow(hwnd as _, SW_RESTORE);
+    }
+}
+
 pub fn set_window_pos(hwnd: usize, x: i32, y: i32) {
     use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::UI::WindowsAndMessaging::{

@@ -321,12 +321,7 @@ fn handle_titlebar_drag_windows(
         && (primary_pressed || pointer_delta.length_sq() > 0.0);
 
     let state = if should_start {
-        let state = crate::core::win::cursor_pos()
-            .zip(crate::core::win::window_pos(hwnd))
-            .map(|(cursor_start, window_start)| WindowDragState {
-                cursor_start,
-                window_start,
-            });
+        let state = start_titlebar_drag(hwnd);
         ui.data_mut(|data| data.insert_temp(drag_state_id, state));
         state
     } else {
@@ -343,6 +338,45 @@ fn handle_titlebar_drag_windows(
             ctx.request_repaint();
         }
     }
+}
+
+#[cfg(windows)]
+fn start_titlebar_drag(hwnd: usize) -> Option<WindowDragState> {
+    let cursor_start = crate::core::win::cursor_pos()?;
+    let window_start = if crate::core::win::is_window_maximized(hwnd) {
+        let maximized_rect = crate::core::win::window_rect(hwnd)?;
+        let restore_rect = crate::core::win::window_restore_rect(hwnd)?;
+        let restore_width = restore_rect.width().max(MIN_WINDOW_WIDTH);
+        let restore_height = restore_rect.height().max(MIN_WINDOW_HEIGHT);
+        let maximized_width = maximized_rect.width().max(1) as f32;
+        let cursor_ratio =
+            ((cursor_start.x - maximized_rect.left) as f32 / maximized_width).clamp(0.0, 1.0);
+        let titlebar_grab_y =
+            (cursor_start.y - maximized_rect.top).clamp(0, TITLEBAR_HEIGHT.round() as i32);
+
+        crate::core::win::restore_window(hwnd);
+
+        let restored_left = cursor_start.x - (restore_width as f32 * cursor_ratio).round() as i32;
+        let restored_top = cursor_start.y - titlebar_grab_y;
+        let restored = crate::core::win::WindowRect {
+            left: restored_left,
+            top: restored_top,
+            right: restored_left + restore_width,
+            bottom: restored_top + restore_height,
+        };
+        crate::core::win::set_window_rect(hwnd, restored);
+        crate::core::win::WindowPoint {
+            x: restored.left,
+            y: restored.top,
+        }
+    } else {
+        crate::core::win::window_pos(hwnd)?
+    };
+
+    Some(WindowDragState {
+        cursor_start,
+        window_start,
+    })
 }
 
 #[cfg(windows)]

@@ -11,8 +11,9 @@ use eframe::egui;
 
 use crate::config::entry::{ConfigEntry, Source};
 use crate::config::settings::{
-    InboundOverrideKind, InboundOverrideSettings, Settings, DEFAULT_MIXED_LISTEN,
-    DEFAULT_MIXED_LISTEN_PORT, DEFAULT_TUN_ADDRESS, DEFAULT_UPDATE_INTERVAL_HOURS,
+    InboundOverrideKind, InboundOverrideSettings, LogLevel, LogOverrideSettings, Settings,
+    DEFAULT_MIXED_LISTEN, DEFAULT_MIXED_LISTEN_PORT, DEFAULT_TUN_ADDRESS,
+    DEFAULT_UPDATE_INTERVAL_HOURS,
 };
 use crate::config::updater::{self, NewConfigSpec};
 use crate::core::paths::Paths;
@@ -372,9 +373,7 @@ impl App {
         let core_exe = self.paths.core_path(&core_name);
         let cfg_path = entry.config_file();
         let runtime_cfg = self.paths.runtime_config_file();
-        if let Err(e) =
-            prepare_runtime_config(&cfg_path, &runtime_cfg, &self.settings.inbound_override)
-        {
+        if let Err(e) = prepare_runtime_config(&cfg_path, &runtime_cfg, &self.settings) {
             self.last_error = Some(e.to_string());
             return;
         }
@@ -607,9 +606,9 @@ fn summarize_config_load_errors(errors: &[String]) -> Option<String> {
 fn prepare_runtime_config(
     source: &std::path::Path,
     runtime: &std::path::Path,
-    inbound_override: &InboundOverrideSettings,
+    settings: &Settings,
 ) -> anyhow::Result<()> {
-    if !inbound_override.enabled {
+    if !settings.inbound_override.enabled && !settings.log_override.enabled {
         if let Some(parent) = runtime.parent() {
             std::fs::create_dir_all(parent).with_context(|| {
                 format!(
@@ -636,10 +635,15 @@ fn prepare_runtime_config(
         anyhow::bail!("config root must be a JSON object: {}", source.display());
     };
 
-    root.insert(
-        "inbounds".to_owned(),
-        serde_json::Value::Array(vec![build_override_inbound(inbound_override)?]),
-    );
+    if settings.inbound_override.enabled {
+        root.insert(
+            "inbounds".to_owned(),
+            serde_json::Value::Array(vec![build_override_inbound(&settings.inbound_override)?]),
+        );
+    }
+    if settings.log_override.enabled {
+        root.insert("log".to_owned(), build_override_log(&settings.log_override));
+    }
 
     let bytes = serde_json::to_vec_pretty(&config)
         .with_context(|| format!("failed to serialize runtime config {}", runtime.display()))?;
@@ -691,6 +695,38 @@ fn build_override_inbound(settings: &InboundOverrideSettings) -> anyhow::Result<
             }
             Ok(inbound)
         }
+    }
+}
+
+fn build_override_log(settings: &LogOverrideSettings) -> serde_json::Value {
+    let mut log = serde_json::Map::new();
+    log.insert(
+        "disabled".to_owned(),
+        serde_json::Value::Bool(settings.disabled),
+    );
+    log.insert(
+        "level".to_owned(),
+        serde_json::Value::String(log_level_label(settings.level).to_owned()),
+    );
+    if settings.save_logs {
+        log.insert(
+            "output".to_owned(),
+            serde_json::Value::String("box.log".to_owned()),
+        );
+    }
+    log.insert("timestamp".to_owned(), serde_json::Value::Bool(true));
+    serde_json::Value::Object(log)
+}
+
+fn log_level_label(level: LogLevel) -> &'static str {
+    match level {
+        LogLevel::Trace => "trace",
+        LogLevel::Debug => "debug",
+        LogLevel::Info => "info",
+        LogLevel::Warn => "warn",
+        LogLevel::Error => "error",
+        LogLevel::Fatal => "fatal",
+        LogLevel::Panic => "panic",
     }
 }
 

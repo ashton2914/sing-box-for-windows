@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 
@@ -22,6 +22,7 @@ const STDERR_TAIL_CAP: usize = 20;
 
 pub struct ProcessHandle {
     child: Mutex<Option<Child>>,
+    started_at: Mutex<Option<Instant>>,
     /// Recent stderr lines, captured by the stderr pump thread. Drained
     /// by the exit watcher to compose a useful error message.
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
@@ -39,6 +40,7 @@ impl ProcessHandle {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             child: Mutex::new(None),
+            started_at: Mutex::new(None),
             stderr_tail: Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_TAIL_CAP))),
             expected_exit: Arc::new(AtomicBool::new(false)),
             last_exit_error: Mutex::new(None),
@@ -50,6 +52,13 @@ impl ProcessHandle {
     /// no `try_wait` race with the watcher.
     pub fn is_running(&self) -> bool {
         self.child.lock().unwrap().is_some()
+    }
+
+    pub fn running_for(&self) -> Option<Duration> {
+        self.started_at
+            .lock()
+            .unwrap()
+            .map(|started| started.elapsed())
     }
 
     /// Take whatever error string the watcher last recorded, if any.
@@ -102,6 +111,7 @@ impl ProcessHandle {
         self.stderr_tail.lock().unwrap().clear();
         *self.last_exit_error.lock().unwrap() = None;
         self.expected_exit.store(false, Ordering::SeqCst);
+        *self.started_at.lock().unwrap() = Some(Instant::now());
         *self.child.lock().unwrap() = Some(child);
 
         if let Some(out) = stdout {
@@ -151,6 +161,7 @@ impl ProcessHandle {
             match child.try_wait() {
                 Ok(Some(status)) => {
                     *guard = None;
+                    *self.started_at.lock().unwrap() = None;
                     drop(guard);
 
                     // A `stop()` request is the *only* "expected" exit
@@ -196,6 +207,7 @@ impl ProcessHandle {
     pub fn stop(&self, log_tx: Sender<LogEvent>) -> Result<()> {
         let mut guard = self.child.lock().unwrap();
         if let Some(mut child) = guard.take() {
+            *self.started_at.lock().unwrap() = None;
             // Mark this exit as expected BEFORE killing so any race
             // with the watcher resolves to "no error reported".
             self.expected_exit.store(true, Ordering::SeqCst);
@@ -236,6 +248,9 @@ impl Drop for ProcessHandle {
         // launcher window is closed.
         if let Ok(mut guard) = self.child.lock() {
             if let Some(mut child) = guard.take() {
+                if let Ok(mut started_at) = self.started_at.lock() {
+                    *started_at = None;
+                }
                 self.expected_exit.store(true, Ordering::SeqCst);
                 let _ = child.kill();
                 let _ = child.wait();
