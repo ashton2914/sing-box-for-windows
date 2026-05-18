@@ -454,9 +454,11 @@ fn popup_combo_row(
     let p = ui.painter().clone();
 
     let bg = if selected {
-        theme::with_alpha(color::primary(), 0.14)
+        let alpha = if theme::is_dark() { 0.14 } else { 0.24 };
+        theme::with_alpha(color::primary(), alpha)
     } else if resp.hovered() {
-        theme::with_alpha(color::on_surface(), 0.06)
+        let alpha = if theme::is_dark() { 0.06 } else { 0.10 };
+        theme::with_alpha(color::on_surface(), alpha)
     } else {
         egui::Color32::TRANSPARENT
     };
@@ -1222,6 +1224,24 @@ fn settings_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
 
             ui.add_space(6.0);
             ui.horizontal(|ui| {
+                if ui
+                    .add(theme::tonal_button("sing-box GitHub"))
+                    .on_hover_text("Open https://github.com/SagerNet/sing-box")
+                    .clicked()
+                {
+                    if let Err(e) = shell::open_url("https://github.com/SagerNet/sing-box") {
+                        app.last_error = Some(format!("Open sing-box GitHub failed: {e}"));
+                    }
+                }
+                if ui
+                    .add(theme::tonal_button("sing-box Docs"))
+                    .on_hover_text("Open https://sing-box.sagernet.org/")
+                    .clicked()
+                {
+                    if let Err(e) = shell::open_url("https://sing-box.sagernet.org/") {
+                        app.last_error = Some(format!("Open sing-box docs failed: {e}"));
+                    }
+                }
                 if ui.add(theme::tonal_button("Open Working Dir")).clicked() {
                     if let Err(e) = shell::open(&app.paths.working_dir) {
                         app.last_error = Some(e.to_string());
@@ -1279,10 +1299,8 @@ fn settings_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
 fn subtle_divider(ui: &mut egui::Ui) {
     let width = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 1.0), egui::Sense::hover());
-    ui.painter().line_segment(
-        [rect.left_center(), rect.right_center()],
-        egui::Stroke::new(1.0, theme::with_alpha(color::outline_variant(), 0.45)),
-    );
+    ui.painter()
+        .rect_filled(rect, egui::Rounding::ZERO, color::outline_variant());
 }
 
 // ---------- Run / status / logs ----------

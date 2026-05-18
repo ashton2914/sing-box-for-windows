@@ -398,24 +398,6 @@ pub fn with_alpha(c: Color32, alpha: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
 }
 
-/// Composite `top` (with alpha) over solid `base`, returning the
-/// resulting opaque color. Use this when you need an opaque value for
-/// a state-layer blend (e.g. to paint underneath a glyph that itself
-/// will mask another shape).
-pub fn blend_over(base: Color32, top: Color32, top_alpha: f32) -> Color32 {
-    let a = top_alpha.clamp(0.0, 1.0);
-    let blend = |b: u8, t: u8| {
-        ((1.0 - a) * b as f32 + a * t as f32)
-            .round()
-            .clamp(0.0, 255.0) as u8
-    };
-    Color32::from_rgb(
-        blend(base.r(), top.r()),
-        blend(base.g(), top.g()),
-        blend(base.b(), top.b()),
-    )
-}
-
 pub const TRANSITION_MODAL: f32 = 0.22;
 pub const TRANSITION_POPUP: f32 = 0.12;
 

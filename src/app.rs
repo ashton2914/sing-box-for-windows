@@ -847,36 +847,15 @@ impl eframe::App for App {
             if let (Some(tray), Some(hwnd)) = (self.tray.as_ref(), self.main_hwnd) {
                 tray.set_main_hwnd(hwnd);
             }
-            // Re-enable Win11's rounded corners on the frameless window
-            // (decorated: false strips them along with the rest of the
-            // non-client area). One-shot per process.
-            #[cfg(windows)]
-            if let Some(hwnd) = self.main_hwnd {
-                crate::core::win::enable_rounded_corners(hwnd);
-            }
         }
 
         self.apply_initial_silent_hide(ctx);
         self.drain_events();
         self.handle_close_request(ctx);
 
-        // Custom frameless chrome (title bar + edge resize handles).
-        // Must run before the CentralPanel so the title bar docks to
-        // the very top.
-        crate::chrome::titlebar(ctx, self.main_hwnd);
-
         egui::CentralPanel::default().show(ctx, |ui| {
             crate::ui::show(ui, self);
         });
-
-        // Edge-resize handles sit on top of the CentralPanel as
-        // foreground Areas, so they need to be added after it.
-        crate::chrome::resize_handles(ctx, self.main_hwnd);
-
-        // Visible 1 px M3 frame around the window edge. Paints last so
-        // it overlays modal dimming overlays and stays visible through
-        // every UI state.
-        crate::chrome::outline(ctx);
 
         // No unconditional periodic repaint:
         //   * the log forwarder, the bg worker, the process exit watcher

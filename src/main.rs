@@ -7,7 +7,6 @@
 #![windows_subsystem = "windows"]
 
 mod app;
-mod chrome;
 mod config;
 mod core;
 mod log_bus;
@@ -71,11 +70,10 @@ fn main() -> eframe::Result<()> {
             .with_min_inner_size([700.0, 840.0])
             .with_title(APP_TITLE)
             .with_icon(load_icon())
-            // Drop the OS title bar / window frame so the launcher
-            // reads as one continuous Material surface from edge to
-            // edge. We paint our own title bar and edge resize handles
-            // in `crate::chrome`.
-            .with_decorations(false)
+            // Keep the native Windows frame so system behaviours such
+            // as Snap, edge resize, maximise/restore and taskbar/window
+            // manager integration stay on the OS path.
+            .with_decorations(true)
             .with_resizable(true)
             .with_visible(!startup_settings.silent_start),
         ..Default::default()
