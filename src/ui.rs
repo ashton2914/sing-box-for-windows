@@ -141,7 +141,7 @@ fn config_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
             None => {
                 ui.label(
                     egui::RichText::new("Select a config above, or click + Add to create one.")
-                        .color(color::ON_SURFACE_VARIANT),
+                        .color(color::on_surface_variant()),
                 );
             }
             Some(entry) => {
@@ -271,8 +271,8 @@ fn popup_combo<T>(
         theme::TRANSITION_POPUP,
     ));
 
-    let outline = egui::Stroke::new(1.0, color::OUTLINE_VARIANT);
-    let surface = color::SURFACE_CONTAINER;
+    let outline = egui::Stroke::new(1.0, color::outline_variant());
+    let surface = color::surface_container();
 
     // Closed-combo rounding: bottom corners ease flat as the popup opens.
     let bottom_radius = radius::SM * (1.0 - open_t);
@@ -287,7 +287,7 @@ fn popup_combo<T>(
         painter.rect_filled(
             rect,
             combo_rounding,
-            theme::with_alpha(color::ON_SURFACE, 0.04),
+            theme::with_alpha(color::on_surface(), 0.04),
         );
     }
 
@@ -295,7 +295,7 @@ fn popup_combo<T>(
     let center_y = inner.center().y;
 
     // Chevron (down-triangle) on the right.
-    let chev_color = color::ON_SURFACE_VARIANT;
+    let chev_color = color::on_surface_variant();
     let chev_w = 9.0;
     let chev_h = 5.0;
     let chev_cx = inner.right() - chev_w * 0.5;
@@ -390,9 +390,9 @@ fn popup_combo_row(
     let p = ui.painter().clone();
 
     let bg = if selected {
-        theme::with_alpha(color::PRIMARY, 0.14)
+        theme::with_alpha(color::primary(), 0.14)
     } else if resp.hovered() {
-        theme::with_alpha(color::ON_SURFACE, 0.06)
+        theme::with_alpha(color::on_surface(), 0.06)
     } else {
         egui::Color32::TRANSPARENT
     };
@@ -435,12 +435,12 @@ fn config_combo(ui: &mut egui::Ui, app: &mut App, width: f32) {
             let center_y = inner.center().y;
             if let Some((name, kind)) = &selected_summary {
                 let name_galley =
-                    ui.fonts(|f| f.layout_no_wrap(name.clone(), name_font, color::ON_SURFACE));
+                    ui.fonts(|f| f.layout_no_wrap(name.clone(), name_font, color::on_surface()));
                 let ns = name_galley.size();
                 painter.galley(
                     egui::pos2(inner.left(), center_y - ns.y * 0.5),
                     name_galley,
-                    color::ON_SURFACE,
+                    color::on_surface(),
                 );
                 let cs = theme::chip_size(ui, kind);
                 let chip_left = inner.left() + ns.x + 8.0;
@@ -450,13 +450,13 @@ fn config_combo(ui: &mut egui::Ui, app: &mut App, width: f32) {
                 }
             } else {
                 let placeholder = ui.fonts(|f| {
-                    f.layout_no_wrap("(none)".into(), name_font, color::ON_SURFACE_VARIANT)
+                    f.layout_no_wrap("(none)".into(), name_font, color::on_surface_variant())
                 });
                 let ps = placeholder.size();
                 painter.galley(
                     egui::pos2(inner.left(), center_y - ps.y * 0.5),
                     placeholder,
-                    color::ON_SURFACE_VARIANT,
+                    color::on_surface_variant(),
                 );
             }
         },
@@ -464,7 +464,7 @@ fn config_combo(ui: &mut egui::Ui, app: &mut App, width: f32) {
             if configs_snapshot.is_empty() {
                 ui.label(
                     egui::RichText::new("(no configs — click + Add)")
-                        .color(color::ON_SURFACE_VARIANT),
+                        .color(color::on_surface_variant()),
                 );
                 return None;
             }
@@ -476,14 +476,14 @@ fn config_combo(ui: &mut egui::Ui, app: &mut App, width: f32) {
                         f.layout_no_wrap(
                             name.clone(),
                             egui::FontId::proportional(14.0),
-                            color::ON_SURFACE,
+                            color::on_surface(),
                         )
                     });
                     let ns = name_galley.size();
                     p.galley(
                         egui::pos2(inner.left(), cy - ns.y * 0.5),
                         name_galley,
-                        color::ON_SURFACE,
+                        color::on_surface(),
                     );
                     let cs = theme::chip_size(ui, kind);
                     let chip_center = egui::pos2(inner.left() + ns.x + 8.0 + cs.x * 0.5, cy);
@@ -520,8 +520,8 @@ fn core_combo(ui: &mut egui::Ui, app: &mut App, width: f32) {
         |ui, painter, inner, _content_right| {
             let name_font = egui::FontId::proportional(13.5);
             let (text, color_) = match current_label.as_deref() {
-                Some(name) => (name.to_string(), color::ON_SURFACE),
-                None => ("(none)".to_string(), color::ON_SURFACE_VARIANT),
+                Some(name) => (name.to_string(), color::on_surface()),
+                None => ("(none)".to_string(), color::on_surface_variant()),
             };
             let galley = ui.fonts(|f| f.layout_no_wrap(text, name_font, color_));
             let center_y = inner.center().y;
@@ -534,7 +534,8 @@ fn core_combo(ui: &mut egui::Ui, app: &mut App, width: f32) {
         |ui| {
             if cores_snapshot.is_empty() {
                 ui.label(
-                    egui::RichText::new("(no *.exe under core/)").color(color::ON_SURFACE_VARIANT),
+                    egui::RichText::new("(no *.exe under core/)")
+                        .color(color::on_surface_variant()),
                 );
                 return None;
             }
@@ -546,13 +547,13 @@ fn core_combo(ui: &mut egui::Ui, app: &mut App, width: f32) {
                         f.layout_no_wrap(
                             name.clone(),
                             egui::FontId::proportional(13.5),
-                            color::ON_SURFACE,
+                            color::on_surface(),
                         )
                     });
                     p.galley(
                         egui::pos2(inner.left(), cy - g.size().y * 0.5),
                         g,
-                        color::ON_SURFACE,
+                        color::on_surface(),
                     );
                 });
                 if clicked {
@@ -572,7 +573,7 @@ fn core_combo(ui: &mut egui::Ui, app: &mut App, width: f32) {
 }
 
 fn detail_value(ui: &mut egui::Ui, text: &str) {
-    ui.label(egui::RichText::new(text).color(color::ON_SURFACE));
+    ui.label(egui::RichText::new(text).color(color::on_surface()));
 }
 
 // ---------- Settings card ----------
@@ -692,7 +693,36 @@ fn settings_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
         // Plain vertical group (no `ui.indent` — it paints a left guide line
         // we don't want; the subsection title already conveys grouping).
         ui.vertical(|ui| {
-            // Admin-mode toggles come first because they're the most
+            // Theme picker — first option in the card so the user can
+            // immediately re-skin everything else they're about to read.
+            // Layout matches the switch rows below: label flush-left,
+            // small pill flush-right.
+            ui.horizontal(|ui| {
+                ui.set_min_height(28.0);
+                ui.label(
+                    egui::RichText::new("Theme")
+                        .color(theme::color::on_surface())
+                        .size(14.0),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if theme::segmented(
+                        ui,
+                        "theme_mode_picker",
+                        &mut app.settings.theme_mode,
+                        &[
+                            (theme::ThemeMode::Dark, "Dark"),
+                            (theme::ThemeMode::Light, "Light"),
+                            (theme::ThemeMode::System, "System"),
+                        ],
+                    )
+                    .changed()
+                    {
+                        app.persist_settings();
+                    }
+                });
+            });
+
+            // Admin-mode toggles come next because they're the most
             // consequential setting (the only one that requires a UAC
             // prompt and a process restart to take effect).
             admin_mode_toggles(ui, app);
@@ -779,13 +809,13 @@ fn settings_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
                         };
                         let loopback_button = egui::Button::new(
                             egui::RichText::new(label)
-                                .color(color::ON_SURFACE)
+                                .color(color::on_surface())
                                 .size(12.5),
                         )
-                        .fill(color::SURFACE_CONTAINER_HIGH)
+                        .fill(color::surface_container_high())
                         .rounding(egui::Rounding::same(radius::FULL))
                         .min_size(egui::Vec2::new(76.0, 24.0))
-                        .stroke(egui::Stroke::new(1.0, color::OUTLINE_VARIANT));
+                        .stroke(egui::Stroke::new(1.0, color::outline_variant()));
                         let resp = ui.add(loopback_button).on_hover_text(
                             "Launch EnableLoopback.exe (downloads from Telerik on first use; UAC \
                              will prompt)",
@@ -872,14 +902,14 @@ fn settings_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
                 ui.label(theme::setting_label("Version"));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
-                        egui::RichText::new(env!("CARGO_PKG_VERSION")).color(color::ON_SURFACE),
+                        egui::RichText::new(env!("CARGO_PKG_VERSION")).color(color::on_surface()),
                     );
                 });
             });
             ui.horizontal(|ui| {
                 ui.label(theme::setting_label("Copyright"));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(egui::RichText::new("© 2026 ashton2914").color(color::ON_SURFACE));
+                    ui.label(egui::RichText::new("© 2026 ashton2914").color(color::on_surface()));
                 });
             });
             ui.horizontal(|ui| {
@@ -906,7 +936,7 @@ fn subtle_divider(ui: &mut egui::Ui) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 1.0), egui::Sense::hover());
     ui.painter().line_segment(
         [rect.left_center(), rect.right_center()],
-        egui::Stroke::new(1.0, theme::with_alpha(color::OUTLINE_VARIANT, 0.45)),
+        egui::Stroke::new(1.0, theme::with_alpha(color::outline_variant(), 0.45)),
     );
 }
 
@@ -925,14 +955,14 @@ fn elevation_pill(ui: &mut egui::Ui) {
     let (label, fg, bg) = if elevated {
         (
             "ADMIN",
-            color::ON_PRIMARY_CONTAINER,
-            theme::with_alpha(color::SUCCESS, 0.22),
+            color::on_primary_container(),
+            theme::with_alpha(color::success(), 0.22),
         )
     } else {
         (
             "USER",
-            color::ON_SURFACE_VARIANT,
-            color::SURFACE_CONTAINER_HIGHEST,
+            color::on_surface_variant(),
+            color::surface_container_highest(),
         )
     };
 
@@ -950,13 +980,13 @@ fn elevation_pill(ui: &mut egui::Ui) {
         painter.rect_stroke(
             rect,
             rounding,
-            egui::Stroke::new(1.0, theme::with_alpha(color::SUCCESS, 0.55)),
+            egui::Stroke::new(1.0, theme::with_alpha(color::success(), 0.55)),
         );
     } else {
         painter.rect_stroke(
             rect,
             rounding,
-            egui::Stroke::new(1.0, color::OUTLINE_VARIANT),
+            egui::Stroke::new(1.0, color::outline_variant()),
         );
     }
     painter.galley(rect.left_top() + egui::vec2(pad_x, pad_y), galley, fg);
@@ -982,9 +1012,9 @@ fn run_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
             }
             ui.add_space(12.0);
             let (status_color, status_text) = if running {
-                (color::SUCCESS, "Running")
+                (color::success(), "Running")
             } else {
-                (color::ON_SURFACE_VARIANT, "Stopped")
+                (color::on_surface_variant(), "Stopped")
             };
             status_text_block(ui, status_text, status_color);
             // Right-align the process integrity chip on the status row.
@@ -995,7 +1025,7 @@ fn run_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
 
         if let Some(err) = app.last_error.clone() {
             ui.add_space(8.0);
-            if banner(ui, &err, color::ERROR_CONTAINER, color::ERROR) {
+            if banner(ui, &err, color::error_container(), color::error()) {
                 app.last_error = None;
             }
         } else if let Some(info) = app.last_info.clone() {
@@ -1008,8 +1038,8 @@ fn run_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
             if banner(
                 ui,
                 &info,
-                theme::with_alpha(color::SUCCESS, 0.18),
-                color::ON_SURFACE,
+                theme::with_alpha(color::success(), 0.18),
+                color::on_surface(),
             ) {
                 app.last_info = None;
             }
@@ -1022,7 +1052,7 @@ fn run_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
         let log_inner_width = (ui.available_width() - LOG_INNER_MARGIN * 2.0).max(0.0);
 
         egui::Frame::none()
-            .fill(color::SURFACE_CONTAINER_LOWEST)
+            .fill(color::surface_container_lowest())
             .rounding(egui::Rounding::same(radius::MD))
             .inner_margin(egui::Margin::same(LOG_INNER_MARGIN))
             .show(ui, |ui| {
@@ -1056,19 +1086,19 @@ fn run_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
                         if app.logs.is_empty() {
                             ui.label(
                                 egui::RichText::new("(no logs yet)")
-                                    .color(color::ON_SURFACE_VARIANT),
+                                    .color(color::on_surface_variant()),
                             );
                         }
                         for log in &app.logs {
                             ui.horizontal(|ui| {
                                 ui.label(
                                     egui::RichText::new(&log.timestamp)
-                                        .color(color::ON_SURFACE_VARIANT)
+                                        .color(color::on_surface_variant())
                                         .monospace(),
                                 );
                                 ui.label(
                                     egui::RichText::new(&log.message)
-                                        .color(color::ON_SURFACE)
+                                        .color(color::on_surface())
                                         .monospace(),
                                 );
                             });
@@ -1088,7 +1118,7 @@ fn status_text_block(ui: &mut egui::Ui, status_text: &str, status_color: egui::C
         f.layout_no_wrap(
             "STATUS".to_string(),
             caption_font,
-            color::ON_SURFACE_VARIANT,
+            color::on_surface_variant(),
         )
     });
     let status = ui.fonts(|f| f.layout_no_wrap(status_text.to_string(), status_font, status_color));
@@ -1101,7 +1131,7 @@ fn status_text_block(ui: &mut egui::Ui, status_text: &str, status_color: egui::C
     painter.galley(
         rect.left_top() + egui::vec2(0.0, y - rect.top()),
         caption,
-        color::ON_SURFACE_VARIANT,
+        color::on_surface_variant(),
     );
     painter.galley(
         rect.left_top() + egui::vec2(0.0, y - rect.top() + caption_h + line_gap),
@@ -1164,7 +1194,7 @@ fn paint_banner_close_button(
         painter.circle_filled(
             rect.center(),
             10.0,
-            theme::with_alpha(color::ON_SURFACE, 0.12),
+            theme::with_alpha(color::on_surface(), 0.12),
         );
     }
 
@@ -1185,7 +1215,7 @@ fn paint_banner_close_button(
 fn field_label(ui: &mut egui::Ui, text: &str) {
     ui.label(
         egui::RichText::new(text)
-            .color(color::ON_SURFACE_VARIANT)
+            .color(color::on_surface_variant())
             .size(11.0)
             .strong(),
     );
@@ -1196,7 +1226,7 @@ fn field_label(ui: &mut egui::Ui, text: &str) {
 /// outweigh the field itself, and tinted with the M3 error color.
 fn field_error(ui: &mut egui::Ui, text: &str) {
     ui.add_space(2.0);
-    ui.label(egui::RichText::new(text).color(color::ERROR).size(11.0));
+    ui.label(egui::RichText::new(text).color(color::error()).size(11.0));
 }
 
 /// Two-button segmented control — one connected pill, no extra padding.
@@ -1213,11 +1243,11 @@ fn segmented_two<T: PartialEq + Copy>(
 
     let (rect, _) = ui.allocate_exact_size(egui::vec2(total_w, height), egui::Sense::hover());
     let painter = ui.painter().clone();
-    let outline = egui::Stroke::new(1.0, color::OUTLINE);
+    let outline = egui::Stroke::new(1.0, color::outline());
     let rounding = egui::Rounding::same(height * 0.5);
 
     // Outer outlined pill.
-    painter.rect(rect, rounding, color::SURFACE, outline);
+    painter.rect(rect, rounding, color::surface(), outline);
 
     for (i, (val, label)) in options.iter().enumerate() {
         let seg_rect = egui::Rect::from_min_size(
@@ -1249,12 +1279,12 @@ fn segmented_two<T: PartialEq + Copy>(
         };
 
         if selected {
-            painter.rect_filled(seg_rect, seg_rounding, color::SECONDARY_CONTAINER);
+            painter.rect_filled(seg_rect, seg_rounding, color::secondary_container());
         } else if resp.hovered() {
             painter.rect_filled(
                 seg_rect,
                 seg_rounding,
-                theme::with_alpha(color::ON_SURFACE, 0.06),
+                theme::with_alpha(color::on_surface(), 0.06),
             );
         }
 
@@ -1270,9 +1300,9 @@ fn segmented_two<T: PartialEq + Copy>(
         }
 
         let fg = if selected {
-            color::ON_SECONDARY_CONTAINER
+            color::on_secondary_container()
         } else {
-            color::ON_SURFACE
+            color::on_surface()
         };
         let galley = ui.fonts(|f| {
             f.layout_no_wrap((*label).to_string(), egui::FontId::proportional(13.5), fg)
@@ -1426,11 +1456,10 @@ fn delete_confirm_modal(ctx: &egui::Context, app: &mut App) {
     let Some(slug) = app.delete_confirm.clone() else {
         return;
     };
-    let entry = app.configs.iter().find(|c| c.slug == slug).cloned();
-    let Some(entry) = entry else {
+    if !app.configs.iter().any(|c| c.slug == slug) {
         app.delete_confirm = None;
         return;
-    };
+    }
 
     let result = theme::modal_dialog(
         ctx,
@@ -1440,16 +1469,8 @@ fn delete_confirm_modal(ctx: &egui::Context, app: &mut App) {
         true,
         |ui, close| {
             ui.label(
-                egui::RichText::new(format!(
-                    "Delete '{}' and wipe its folder?\n{}",
-                    entry.metadata.name,
-                    entry.folder.display()
-                ))
-                .color(color::ON_SURFACE),
-            );
-            ui.add_space(6.0);
-            ui.label(
-                egui::RichText::new("This cannot be undone.").color(color::ON_SURFACE_VARIANT),
+                egui::RichText::new("This will delete the config and cannot be undone.")
+                    .color(color::on_surface()),
             );
             ui.add_space(14.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1485,7 +1506,7 @@ fn destroy_confirm_modal(ctx: &egui::Context, app: &mut App) {
                     "This will clear the current working directory. \
                      This action cannot be undone.",
                 )
-                .color(color::ON_SURFACE),
+                .color(color::on_surface()),
             );
             ui.add_space(14.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1592,13 +1613,13 @@ fn about_modal(ctx: &egui::Context, app: &mut App) {
                             crate::APP_TITLE,
                             env!("CARGO_PKG_VERSION")
                         ))
-                        .color(color::ON_SURFACE)
+                        .color(color::on_surface())
                         .strong()
                         .size(15.0),
                     );
                     ui.label(
                         egui::RichText::new("Copyright © 2026 ashton2914")
-                            .color(color::ON_SURFACE_VARIANT),
+                            .color(color::on_surface_variant()),
                     );
 
                     ui.add_space(10.0);
@@ -1620,7 +1641,7 @@ fn about_modal(ctx: &egui::Context, app: &mut App) {
                              sing-box in any jurisdiction; users are solely responsible for \
                              complying with all applicable laws and regulations.",
                         )
-                        .color(color::ON_SURFACE),
+                        .color(color::on_surface()),
                     );
 
                     ui.add_space(14.0);
@@ -1639,7 +1660,7 @@ fn about_modal(ctx: &egui::Context, app: &mut App) {
                              MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the \
                              GNU General Public License for more details.",
                         )
-                        .color(color::ON_SURFACE),
+                        .color(color::on_surface()),
                     );
 
                     ui.add_space(8.0);
@@ -1651,7 +1672,7 @@ fn about_modal(ctx: &egui::Context, app: &mut App) {
                     // intentionally short to keep the overall modal
                     // tidy.
                     egui::Frame::none()
-                        .fill(color::SURFACE_CONTAINER_LOWEST)
+                        .fill(color::surface_container_lowest())
                         .rounding(egui::Rounding::same(radius::MD))
                         .inner_margin(egui::Margin::same(10.0))
                         .show(ui, |ui| {
@@ -1666,7 +1687,7 @@ fn about_modal(ctx: &egui::Context, app: &mut App) {
                                     ui.add(
                                         egui::Label::new(
                                             egui::RichText::new(LICENSE_TEXT)
-                                                .color(color::ON_SURFACE_VARIANT)
+                                                .color(color::on_surface_variant())
                                                 .monospace()
                                                 .size(11.5),
                                         )

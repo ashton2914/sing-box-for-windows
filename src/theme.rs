@@ -1,54 +1,270 @@
-//! Material Design 3 (dark) theme adapter for egui.
+//! Material Design 3 theme adapter for egui.
 //!
 //! Provides:
-//! * A baseline tonal-palette dark color scheme
+//! * Runtime-swappable tonal palettes (dark + light, M3 purple seed)
 //! * Typography matching the M3 type scale (Title/Body/Label sizes)
 //! * Shape tokens (XS/SM/MD/LG/XL/Full)
 //! * Pre-styled component helpers: `card`, `filled_button`, `tonal_button`,
-//!   `outlined_button`, `text_button`, `fab`, `section_title`.
+//!   `outlined_button`, `text_button`, `fab`, `section_title`, `switch`,
+//!   `segmented`.
 //!
 //! Reference: https://m3.material.io/
 
 #![allow(dead_code)]
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use eframe::egui::{self, Color32, FontFamily, FontId, Margin, Rounding, Stroke, TextStyle, Vec2};
+use serde::{Deserialize, Serialize};
 
 // -------------------------------------------------------------------------
-// Color tokens (dark scheme — purple seed, M3 baseline)
+// Palette (runtime-swappable)
+// -------------------------------------------------------------------------
+//
+// All M3 tonal tokens live on a `Palette` struct so we can flip dark↔light
+// without recompiling. A single `AtomicBool` selects between two `static`
+// palettes; reads are lock-free and the `color::*()` accessors below
+// inline to a single load + field copy.
+//
+// Adding a token: extend `Palette`, set values in both `Palette::dark` and
+// `Palette::light`, then expose a `pub fn` in `mod color`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Palette {
+    pub primary: Color32,
+    pub on_primary: Color32,
+    pub primary_container: Color32,
+    pub on_primary_container: Color32,
+    pub secondary_container: Color32,
+    pub on_secondary_container: Color32,
+    pub tertiary: Color32,
+    pub tertiary_container: Color32,
+    pub on_tertiary_container: Color32,
+    pub error: Color32,
+    pub on_error: Color32,
+    pub error_container: Color32,
+    pub success: Color32,
+    pub surface: Color32,
+    pub surface_container_lowest: Color32,
+    pub surface_container_low: Color32,
+    pub surface_container: Color32,
+    pub surface_container_high: Color32,
+    pub surface_container_highest: Color32,
+    pub on_surface: Color32,
+    pub on_surface_variant: Color32,
+    pub outline: Color32,
+    pub outline_variant: Color32,
+    pub is_dark: bool,
+}
+
+impl Palette {
+    /// M3 baseline dark palette (purple seed).
+    pub const fn dark() -> Self {
+        Self {
+            primary: Color32::from_rgb(208, 188, 255),
+            on_primary: Color32::from_rgb(56, 30, 114),
+            primary_container: Color32::from_rgb(79, 55, 139),
+            on_primary_container: Color32::from_rgb(234, 221, 255),
+            secondary_container: Color32::from_rgb(74, 68, 88),
+            on_secondary_container: Color32::from_rgb(232, 222, 248),
+            tertiary: Color32::from_rgb(239, 184, 200),
+            tertiary_container: Color32::from_rgb(99, 59, 72),
+            on_tertiary_container: Color32::from_rgb(255, 217, 226),
+            error: Color32::from_rgb(242, 184, 181),
+            on_error: Color32::from_rgb(96, 20, 16),
+            error_container: Color32::from_rgb(140, 29, 24),
+            success: Color32::from_rgb(118, 217, 144),
+            surface: Color32::from_rgb(20, 18, 24),
+            surface_container_lowest: Color32::from_rgb(15, 13, 19),
+            surface_container_low: Color32::from_rgb(29, 27, 32),
+            surface_container: Color32::from_rgb(33, 31, 38),
+            surface_container_high: Color32::from_rgb(43, 41, 48),
+            surface_container_highest: Color32::from_rgb(54, 52, 59),
+            on_surface: Color32::from_rgb(230, 224, 233),
+            on_surface_variant: Color32::from_rgb(202, 196, 208),
+            outline: Color32::from_rgb(147, 143, 153),
+            outline_variant: Color32::from_rgb(73, 69, 79),
+            is_dark: true,
+        }
+    }
+
+    /// M3 baseline light palette (same purple seed as `dark`).
+    pub const fn light() -> Self {
+        Self {
+            primary: Color32::from_rgb(103, 80, 164),
+            on_primary: Color32::from_rgb(255, 255, 255),
+            primary_container: Color32::from_rgb(234, 221, 255),
+            on_primary_container: Color32::from_rgb(33, 0, 93),
+            secondary_container: Color32::from_rgb(232, 222, 248),
+            on_secondary_container: Color32::from_rgb(29, 25, 43),
+            tertiary: Color32::from_rgb(125, 82, 96),
+            tertiary_container: Color32::from_rgb(255, 217, 226),
+            on_tertiary_container: Color32::from_rgb(55, 11, 30),
+            error: Color32::from_rgb(179, 38, 30),
+            on_error: Color32::from_rgb(255, 255, 255),
+            error_container: Color32::from_rgb(249, 222, 220),
+            success: Color32::from_rgb(35, 134, 54),
+            // Light-mode surface ramp follows M3 neutral-95→100 with a
+            // subtle warm cast so cards visibly separate from the
+            // window background.
+            surface: Color32::from_rgb(254, 247, 255),
+            surface_container_lowest: Color32::from_rgb(255, 255, 255),
+            surface_container_low: Color32::from_rgb(247, 242, 250),
+            surface_container: Color32::from_rgb(243, 237, 247),
+            surface_container_high: Color32::from_rgb(236, 230, 240),
+            surface_container_highest: Color32::from_rgb(230, 224, 233),
+            on_surface: Color32::from_rgb(28, 27, 31),
+            on_surface_variant: Color32::from_rgb(73, 69, 79),
+            outline: Color32::from_rgb(121, 116, 126),
+            outline_variant: Color32::from_rgb(196, 199, 197),
+            is_dark: false,
+        }
+    }
+}
+
+static DARK_PALETTE: Palette = Palette::dark();
+static LIGHT_PALETTE: Palette = Palette::light();
+static IS_DARK: AtomicBool = AtomicBool::new(true);
+
+#[inline]
+pub fn current_palette() -> &'static Palette {
+    if IS_DARK.load(Ordering::Relaxed) {
+        &DARK_PALETTE
+    } else {
+        &LIGHT_PALETTE
+    }
+}
+
+#[inline]
+pub fn is_dark() -> bool {
+    IS_DARK.load(Ordering::Relaxed)
+}
+
+#[inline]
+pub fn set_dark(dark: bool) {
+    IS_DARK.store(dark, Ordering::Relaxed);
+}
+
+/// User-selectable theme preference. `System` defers to the host OS.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeMode {
+    Dark,
+    Light,
+    #[default]
+    System,
+}
+
+impl ThemeMode {
+    /// Resolve to the concrete `is_dark` flag given the current system value.
+    pub fn resolve(self, system_is_dark: bool) -> bool {
+        match self {
+            ThemeMode::Dark => true,
+            ThemeMode::Light => false,
+            ThemeMode::System => system_is_dark,
+        }
+    }
+}
+
+// -------------------------------------------------------------------------
+// Color tokens (M3 names → runtime palette accessors)
 // -------------------------------------------------------------------------
 pub mod color {
     use eframe::egui::Color32;
 
-    pub const PRIMARY: Color32 = Color32::from_rgb(208, 188, 255);
-    pub const ON_PRIMARY: Color32 = Color32::from_rgb(56, 30, 114);
-    pub const PRIMARY_CONTAINER: Color32 = Color32::from_rgb(79, 55, 139);
-    pub const ON_PRIMARY_CONTAINER: Color32 = Color32::from_rgb(234, 221, 255);
+    use super::current_palette;
 
-    pub const SECONDARY_CONTAINER: Color32 = Color32::from_rgb(74, 68, 88);
-    pub const ON_SECONDARY_CONTAINER: Color32 = Color32::from_rgb(232, 222, 248);
-
-    pub const TERTIARY: Color32 = Color32::from_rgb(239, 184, 200);
-    pub const TERTIARY_CONTAINER: Color32 = Color32::from_rgb(99, 59, 72);
-    pub const ON_TERTIARY_CONTAINER: Color32 = Color32::from_rgb(255, 217, 226);
-
-    pub const ERROR: Color32 = Color32::from_rgb(242, 184, 181);
-    pub const ON_ERROR: Color32 = Color32::from_rgb(96, 20, 16);
-    pub const ERROR_CONTAINER: Color32 = Color32::from_rgb(140, 29, 24);
-
-    pub const SUCCESS: Color32 = Color32::from_rgb(118, 217, 144);
-
-    pub const SURFACE: Color32 = Color32::from_rgb(20, 18, 24);
-    pub const SURFACE_CONTAINER_LOWEST: Color32 = Color32::from_rgb(15, 13, 19);
-    pub const SURFACE_CONTAINER_LOW: Color32 = Color32::from_rgb(29, 27, 32);
-    pub const SURFACE_CONTAINER: Color32 = Color32::from_rgb(33, 31, 38);
-    pub const SURFACE_CONTAINER_HIGH: Color32 = Color32::from_rgb(43, 41, 48);
-    pub const SURFACE_CONTAINER_HIGHEST: Color32 = Color32::from_rgb(54, 52, 59);
-
-    pub const ON_SURFACE: Color32 = Color32::from_rgb(230, 224, 233);
-    pub const ON_SURFACE_VARIANT: Color32 = Color32::from_rgb(202, 196, 208);
-
-    pub const OUTLINE: Color32 = Color32::from_rgb(147, 143, 153);
-    pub const OUTLINE_VARIANT: Color32 = Color32::from_rgb(73, 69, 79);
+    #[inline]
+    pub fn primary() -> Color32 {
+        current_palette().primary
+    }
+    #[inline]
+    pub fn on_primary() -> Color32 {
+        current_palette().on_primary
+    }
+    #[inline]
+    pub fn primary_container() -> Color32 {
+        current_palette().primary_container
+    }
+    #[inline]
+    pub fn on_primary_container() -> Color32 {
+        current_palette().on_primary_container
+    }
+    #[inline]
+    pub fn secondary_container() -> Color32 {
+        current_palette().secondary_container
+    }
+    #[inline]
+    pub fn on_secondary_container() -> Color32 {
+        current_palette().on_secondary_container
+    }
+    #[inline]
+    pub fn tertiary() -> Color32 {
+        current_palette().tertiary
+    }
+    #[inline]
+    pub fn tertiary_container() -> Color32 {
+        current_palette().tertiary_container
+    }
+    #[inline]
+    pub fn on_tertiary_container() -> Color32 {
+        current_palette().on_tertiary_container
+    }
+    #[inline]
+    pub fn error() -> Color32 {
+        current_palette().error
+    }
+    #[inline]
+    pub fn on_error() -> Color32 {
+        current_palette().on_error
+    }
+    #[inline]
+    pub fn error_container() -> Color32 {
+        current_palette().error_container
+    }
+    #[inline]
+    pub fn success() -> Color32 {
+        current_palette().success
+    }
+    #[inline]
+    pub fn surface() -> Color32 {
+        current_palette().surface
+    }
+    #[inline]
+    pub fn surface_container_lowest() -> Color32 {
+        current_palette().surface_container_lowest
+    }
+    #[inline]
+    pub fn surface_container_low() -> Color32 {
+        current_palette().surface_container_low
+    }
+    #[inline]
+    pub fn surface_container() -> Color32 {
+        current_palette().surface_container
+    }
+    #[inline]
+    pub fn surface_container_high() -> Color32 {
+        current_palette().surface_container_high
+    }
+    #[inline]
+    pub fn surface_container_highest() -> Color32 {
+        current_palette().surface_container_highest
+    }
+    #[inline]
+    pub fn on_surface() -> Color32 {
+        current_palette().on_surface
+    }
+    #[inline]
+    pub fn on_surface_variant() -> Color32 {
+        current_palette().on_surface_variant
+    }
+    #[inline]
+    pub fn outline() -> Color32 {
+        current_palette().outline
+    }
+    #[inline]
+    pub fn outline_variant() -> Color32 {
+        current_palette().outline_variant
+    }
 }
 
 // -------------------------------------------------------------------------
@@ -100,73 +316,82 @@ pub fn apply(ctx: &egui::Context) {
     style.spacing.interact_size = Vec2::new(36.0, 28.0);
     style.spacing.combo_height = 240.0;
 
-    // ----- Visuals (dark) -----
-    let mut v = egui::Visuals::dark();
-    v.dark_mode = true;
-    v.override_text_color = Some(color::ON_SURFACE);
-    v.window_fill = color::SURFACE;
-    v.panel_fill = color::SURFACE;
-    v.extreme_bg_color = color::SURFACE_CONTAINER_LOWEST;
-    v.faint_bg_color = color::SURFACE_CONTAINER_LOW;
-    v.code_bg_color = color::SURFACE_CONTAINER;
+    // ----- Visuals (palette-driven) -----
+    let p = current_palette();
+    let mut v = if p.is_dark {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
+    v.dark_mode = p.is_dark;
+    v.override_text_color = Some(p.on_surface);
+    v.window_fill = p.surface;
+    v.panel_fill = p.surface;
+    v.extreme_bg_color = p.surface_container_lowest;
+    v.faint_bg_color = p.surface_container_low;
+    v.code_bg_color = p.surface_container;
 
     v.window_rounding = Rounding::same(radius::LG);
     v.menu_rounding = Rounding::same(radius::MD);
-    v.window_stroke = Stroke::new(1.0, color::OUTLINE_VARIANT);
+    v.window_stroke = Stroke::new(1.0, p.outline_variant);
+    // Shadows are darker / more opaque on a light background so cards
+    // visibly lift off the surface; on dark backgrounds we keep the
+    // current subtle tint.
+    let shadow_alpha = |dark: u8, light: u8| if p.is_dark { dark } else { light };
     v.window_shadow = egui::epaint::Shadow {
         offset: Vec2::new(0.0, 4.0),
         blur: 16.0,
         spread: 0.0,
-        color: Color32::from_black_alpha(96),
+        color: Color32::from_black_alpha(shadow_alpha(96, 40)),
     };
     v.popup_shadow = egui::epaint::Shadow {
         offset: Vec2::new(0.0, 2.0),
         blur: 8.0,
         spread: 0.0,
-        color: Color32::from_black_alpha(72),
+        color: Color32::from_black_alpha(shadow_alpha(72, 32)),
     };
 
-    v.selection.bg_fill = color::PRIMARY_CONTAINER;
-    v.selection.stroke = Stroke::new(1.0, color::ON_PRIMARY_CONTAINER);
-    v.hyperlink_color = color::PRIMARY;
-    v.error_fg_color = color::ERROR;
-    v.warn_fg_color = color::TERTIARY;
+    v.selection.bg_fill = p.primary_container;
+    v.selection.stroke = Stroke::new(1.0, p.on_primary_container);
+    v.hyperlink_color = p.primary;
+    v.error_fg_color = p.error;
+    v.warn_fg_color = p.tertiary;
 
     // ----- Default widget look = M3 "outlined" =====
     // (filled/tonal/etc. are obtained via the helper buttons below)
-    let outline = Stroke::new(1.0, color::OUTLINE);
+    let outline = Stroke::new(1.0, p.outline);
 
     v.widgets.noninteractive.bg_fill = Color32::TRANSPARENT;
     v.widgets.noninteractive.weak_bg_fill = Color32::TRANSPARENT;
-    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, color::OUTLINE_VARIANT);
-    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, color::ON_SURFACE);
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, p.outline_variant);
+    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, p.on_surface);
     v.widgets.noninteractive.rounding = Rounding::same(radius::SM);
 
     v.widgets.inactive.bg_fill = Color32::TRANSPARENT;
     v.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
     v.widgets.inactive.bg_stroke = outline;
-    v.widgets.inactive.fg_stroke = Stroke::new(1.0, color::ON_SURFACE);
+    v.widgets.inactive.fg_stroke = Stroke::new(1.0, p.on_surface);
     v.widgets.inactive.rounding = Rounding::same(radius::SM);
     v.widgets.inactive.expansion = 0.0;
 
-    v.widgets.hovered.bg_fill = with_alpha(color::ON_SURFACE, 0.08);
-    v.widgets.hovered.weak_bg_fill = with_alpha(color::ON_SURFACE, 0.08);
+    v.widgets.hovered.bg_fill = with_alpha(p.on_surface, 0.08);
+    v.widgets.hovered.weak_bg_fill = with_alpha(p.on_surface, 0.08);
     v.widgets.hovered.bg_stroke = outline;
-    v.widgets.hovered.fg_stroke = Stroke::new(1.0, color::ON_SURFACE);
+    v.widgets.hovered.fg_stroke = Stroke::new(1.0, p.on_surface);
     v.widgets.hovered.rounding = Rounding::same(radius::SM);
     v.widgets.hovered.expansion = 0.0;
 
-    v.widgets.active.bg_fill = with_alpha(color::ON_SURFACE, 0.12);
-    v.widgets.active.weak_bg_fill = with_alpha(color::ON_SURFACE, 0.12);
+    v.widgets.active.bg_fill = with_alpha(p.on_surface, 0.12);
+    v.widgets.active.weak_bg_fill = with_alpha(p.on_surface, 0.12);
     v.widgets.active.bg_stroke = outline;
-    v.widgets.active.fg_stroke = Stroke::new(1.0, color::ON_SURFACE);
+    v.widgets.active.fg_stroke = Stroke::new(1.0, p.on_surface);
     v.widgets.active.rounding = Rounding::same(radius::SM);
     v.widgets.active.expansion = 0.0;
 
-    v.widgets.open.bg_fill = color::SURFACE_CONTAINER_HIGH;
-    v.widgets.open.weak_bg_fill = color::SURFACE_CONTAINER_HIGH;
-    v.widgets.open.bg_stroke = Stroke::new(1.0, color::OUTLINE_VARIANT);
-    v.widgets.open.fg_stroke = Stroke::new(1.0, color::ON_SURFACE);
+    v.widgets.open.bg_fill = p.surface_container_high;
+    v.widgets.open.weak_bg_fill = p.surface_container_high;
+    v.widgets.open.bg_stroke = Stroke::new(1.0, p.outline_variant);
+    v.widgets.open.fg_stroke = Stroke::new(1.0, p.on_surface);
     v.widgets.open.rounding = Rounding::same(radius::SM);
 
     style.visuals = v;
@@ -360,7 +585,7 @@ pub fn card_with_width<R>(
 ) -> R {
     let inner_w = (outer_width - 28.0).max(0.0); // subtract horizontal inner margin (14*2)
     egui::Frame::none()
-        .fill(color::SURFACE_CONTAINER_LOW)
+        .fill(color::surface_container_low())
         .rounding(Rounding::same(radius::LG))
         .inner_margin(Margin::same(14.0))
         .stroke(Stroke::NONE)
@@ -376,7 +601,7 @@ pub fn card_with_width<R>(
 pub fn section_title(ui: &mut egui::Ui, text: &str) {
     ui.label(
         egui::RichText::new(text)
-            .color(color::ON_SURFACE)
+            .color(color::on_surface())
             .size(20.0)
             .heading()
             .strong(),
@@ -387,7 +612,7 @@ pub fn section_title(ui: &mut egui::Ui, text: &str) {
 pub fn subsection_title(ui: &mut egui::Ui, text: &str) {
     ui.label(
         egui::RichText::new(text)
-            .color(color::ON_SURFACE)
+            .color(color::on_surface())
             .size(14.0)
             .strong(),
     );
@@ -397,7 +622,7 @@ pub fn subsection_title(ui: &mut egui::Ui, text: &str) {
 /// switch rows, value rows, and picker rows read as one consistent group.
 pub fn setting_label(text: impl Into<String>) -> egui::RichText {
     egui::RichText::new(text.into())
-        .color(color::ON_SURFACE)
+        .color(color::on_surface())
         .size(SWITCH_LABEL_FONT)
 }
 
@@ -413,34 +638,34 @@ fn button_text(text: impl Into<String>, color: Color32) -> egui::RichText {
 
 /// M3 Filled Button (high emphasis, primary action).
 pub fn filled_button(text: impl Into<String>) -> egui::Button<'static> {
-    egui::Button::new(button_text(text, color::ON_PRIMARY))
-        .fill(color::PRIMARY)
+    egui::Button::new(button_text(text, color::on_primary()))
+        .fill(color::primary())
         .rounding(Rounding::same(radius::FULL))
         .min_size(BTN_MIN)
-        .stroke(Stroke::new(1.0, color::PRIMARY))
+        .stroke(Stroke::new(1.0, color::primary()))
 }
 
 /// M3 Filled Tonal Button (medium emphasis).
 pub fn tonal_button(text: impl Into<String>) -> egui::Button<'static> {
-    egui::Button::new(button_text(text, color::ON_SECONDARY_CONTAINER))
-        .fill(color::SECONDARY_CONTAINER)
+    egui::Button::new(button_text(text, color::on_secondary_container()))
+        .fill(color::secondary_container())
         .rounding(Rounding::same(radius::FULL))
         .min_size(BTN_MIN)
-        .stroke(Stroke::new(1.0, color::SECONDARY_CONTAINER))
+        .stroke(Stroke::new(1.0, color::secondary_container()))
 }
 
 /// M3 Outlined Button (medium emphasis, neutral).
 pub fn outlined_button(text: impl Into<String>) -> egui::Button<'static> {
-    egui::Button::new(button_text(text, color::PRIMARY))
+    egui::Button::new(button_text(text, color::primary()))
         .fill(Color32::TRANSPARENT)
         .rounding(Rounding::same(radius::FULL))
         .min_size(BTN_MIN)
-        .stroke(Stroke::new(1.0, color::OUTLINE))
+        .stroke(Stroke::new(1.0, color::outline()))
 }
 
 /// M3 Text Button (low emphasis).
 pub fn text_button(text: impl Into<String>) -> egui::Button<'static> {
-    egui::Button::new(button_text(text, color::PRIMARY))
+    egui::Button::new(button_text(text, color::primary()))
         .fill(Color32::TRANSPARENT)
         .rounding(Rounding::same(radius::FULL))
         .min_size(BTN_MIN_TEXT)
@@ -449,20 +674,20 @@ pub fn text_button(text: impl Into<String>) -> egui::Button<'static> {
 
 /// Destructive variant of [`outlined_button`] using the error palette.
 pub fn destructive_button(text: impl Into<String>) -> egui::Button<'static> {
-    egui::Button::new(button_text(text, color::ERROR))
+    egui::Button::new(button_text(text, color::error()))
         .fill(Color32::TRANSPARENT)
         .rounding(Rounding::same(radius::FULL))
         .min_size(BTN_MIN)
-        .stroke(Stroke::new(1.0, color::ERROR))
+        .stroke(Stroke::new(1.0, color::error()))
 }
 
 /// Destructive filled variant for confirm modals.
 pub fn destructive_filled_button(text: impl Into<String>) -> egui::Button<'static> {
-    egui::Button::new(button_text(text, color::ON_ERROR))
-        .fill(color::ERROR)
+    egui::Button::new(button_text(text, color::on_error()))
+        .fill(color::error())
         .rounding(Rounding::same(radius::FULL))
         .min_size(BTN_MIN)
-        .stroke(Stroke::new(1.0, color::ERROR))
+        .stroke(Stroke::new(1.0, color::error()))
 }
 
 /// Compact circular FAB — primary container fill.
@@ -488,12 +713,12 @@ pub fn fab_button(ui: &mut egui::Ui, icon: FabIcon) -> egui::Response {
     let radius_px = rect.width() * 0.5;
 
     // Background circle with hover/active state-layer overlay.
-    painter.circle_filled(center, radius_px, color::PRIMARY_CONTAINER);
+    painter.circle_filled(center, radius_px, color::primary_container());
     if response.hovered() || response.is_pointer_button_down_on() {
         painter.circle_filled(
             center,
             radius_px,
-            with_alpha(color::ON_PRIMARY_CONTAINER, 0.10),
+            with_alpha(color::on_primary_container(), 0.10),
         );
     }
     // Subtle focus ring.
@@ -501,7 +726,7 @@ pub fn fab_button(ui: &mut egui::Ui, icon: FabIcon) -> egui::Response {
         painter.circle_stroke(center, radius_px, Stroke::new(2.0, visuals.fg_stroke.color));
     }
 
-    let fg = color::ON_PRIMARY_CONTAINER;
+    let fg = color::on_primary_container();
     match icon {
         FabIcon::Play => {
             // Equilateral triangle, optically centered: shift left so the
@@ -536,7 +761,7 @@ pub fn fab_button(ui: &mut egui::Ui, icon: FabIcon) -> egui::Response {
 pub fn icon_button(text: impl Into<String>) -> egui::Button<'static> {
     egui::Button::new(
         egui::RichText::new(text.into())
-            .color(color::ON_SURFACE_VARIANT)
+            .color(color::on_surface_variant())
             .size(15.0),
     )
     .fill(Color32::TRANSPARENT)
@@ -555,9 +780,9 @@ pub fn close_button(ui: &mut egui::Ui) -> egui::Response {
 
     // State-layer background on hover/active for subtle affordance.
     let bg = if resp.is_pointer_button_down_on() {
-        with_alpha(color::ON_SURFACE, 0.12)
+        with_alpha(color::on_surface(), 0.12)
     } else if resp.hovered() {
-        with_alpha(color::ON_SURFACE, 0.08)
+        with_alpha(color::on_surface(), 0.08)
     } else {
         Color32::TRANSPARENT
     };
@@ -568,9 +793,9 @@ pub fn close_button(ui: &mut egui::Ui) -> egui::Response {
     let stroke = Stroke::new(
         1.6,
         if resp.hovered() {
-            color::ON_SURFACE
+            color::on_surface()
         } else {
-            color::ON_SURFACE_VARIANT
+            color::on_surface_variant()
         },
     );
     let r = rect.shrink(inset);
@@ -601,7 +826,7 @@ pub fn checkbox(ui: &mut egui::Ui, checked: &mut bool, text: &str) -> egui::Resp
         f.layout_no_wrap(
             text.to_string(),
             FontId::proportional(CHECKBOX_LABEL_FONT),
-            color::ON_SURFACE,
+            color::on_surface(),
         )
     });
     let total = Vec2::new(
@@ -624,21 +849,21 @@ pub fn checkbox(ui: &mut egui::Ui, checked: &mut bool, text: &str) -> egui::Resp
         painter.circle_filled(
             box_center,
             CHECKBOX_BOX * 0.85,
-            with_alpha(color::ON_SURFACE, 0.16),
+            with_alpha(color::on_surface(), 0.16),
         );
     } else if resp.hovered() {
         painter.circle_filled(
             box_center,
             CHECKBOX_BOX * 0.85,
-            with_alpha(color::ON_SURFACE, 0.08),
+            with_alpha(color::on_surface(), 0.08),
         );
     }
 
     let r = Rounding::same(3.0);
     if *checked {
-        painter.rect_filled(box_rect, r, color::PRIMARY);
+        painter.rect_filled(box_rect, r, color::primary());
         // Two-segment checkmark.
-        let stroke = Stroke::new(2.0, color::ON_PRIMARY);
+        let stroke = Stroke::new(2.0, color::on_primary());
         let tl = box_rect.left_top();
         let p1 = tl + Vec2::new(CHECKBOX_BOX * 0.22, CHECKBOX_BOX * 0.52);
         let p2 = tl + Vec2::new(CHECKBOX_BOX * 0.42, CHECKBOX_BOX * 0.72);
@@ -646,7 +871,7 @@ pub fn checkbox(ui: &mut egui::Ui, checked: &mut bool, text: &str) -> egui::Resp
         painter.line_segment([p1, p2], stroke);
         painter.line_segment([p2, p3], stroke);
     } else {
-        let stroke = Stroke::new(2.0, color::ON_SURFACE_VARIANT);
+        let stroke = Stroke::new(2.0, color::on_surface_variant());
         painter.rect_stroke(box_rect, r, stroke);
     }
 
@@ -654,7 +879,7 @@ pub fn checkbox(ui: &mut egui::Ui, checked: &mut bool, text: &str) -> egui::Resp
         box_rect.right() + CHECKBOX_GAP,
         rect.center().y - label_galley.size().y * 0.5,
     );
-    painter.galley(text_pos, label_galley, color::ON_SURFACE);
+    painter.galley(text_pos, label_galley, color::on_surface());
 
     resp
 }
@@ -687,11 +912,11 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool, text: &str) -> egui::Response {
         f.layout_no_wrap(
             text.to_string(),
             FontId::proportional(SWITCH_LABEL_FONT),
-            color::ON_SURFACE,
+            color::on_surface(),
         )
     });
     let label_pos = egui::pos2(rect.left(), rect.center().y - label_galley.size().y * 0.5);
-    painter.galley(label_pos, label_galley, color::ON_SURFACE);
+    painter.galley(label_pos, label_galley, color::on_surface());
 
     // Track, right-aligned.
     let track_rect = egui::Rect::from_min_size(
@@ -721,7 +946,11 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool, text: &str) -> egui::Response {
     painter.rect_filled(
         track_rect,
         track_rounding,
-        lerp_color(color::SURFACE_CONTAINER_HIGHEST, color::PRIMARY, value_t),
+        lerp_color(
+            color::surface_container_highest(),
+            color::primary(),
+            value_t,
+        ),
     );
     if value_t < 1.0 {
         painter.rect_stroke(
@@ -729,7 +958,7 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool, text: &str) -> egui::Response {
             track_rounding,
             Stroke::new(
                 1.5 * (1.0 - value_t),
-                with_alpha(color::OUTLINE, 1.0 - value_t),
+                with_alpha(color::outline(), 1.0 - value_t),
             ),
         );
     }
@@ -746,7 +975,7 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool, text: &str) -> egui::Response {
     // State layer behind the thumb — small, only when pointer is actually
     // over the switch (not just somewhere in the row).
     if let Some(alpha) = switch_layer_alpha(ui, &resp, track_rect) {
-        let layer_color = lerp_color(color::ON_SURFACE, color::PRIMARY, value_t);
+        let layer_color = lerp_color(color::on_surface(), color::primary(), value_t);
         painter.circle_filled(
             thumb_center,
             thumb_radius + 4.0,
@@ -754,7 +983,7 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool, text: &str) -> egui::Response {
         );
     }
 
-    let thumb_color = lerp_color(color::OUTLINE, color::ON_PRIMARY, value_t);
+    let thumb_color = lerp_color(color::outline(), color::on_primary(), value_t);
     painter.circle_filled(thumb_center, thumb_radius, thumb_color);
 
     resp
@@ -775,6 +1004,116 @@ fn switch_layer_alpha(ui: &egui::Ui, resp: &egui::Response, track_rect: egui::Re
     } else {
         None
     }
+}
+
+// -------------------------------------------------------------------------
+// Segmented picker — pill-shaped row of N options with an animated thumb.
+//
+// Use for small mutually-exclusive enums where a switch isn't enough but
+// a dropdown would feel heavyweight (e.g. "Dark / Light / System").
+// The thumb glides between cells over `SEGMENTED_TRANSITION`, intentionally
+// a hair slower than `SWITCH_TRANSITION` so multi-cell travel reads
+// deliberate without feeling laggy.
+//
+// The widget sizes itself to its content (longest label + cell padding)
+// so it can sit inline next to a section label rather than spanning the
+// full row width.
+const SEGMENTED_HEIGHT: f32 = 24.0;
+const SEGMENTED_INNER_PAD: f32 = 2.0;
+const SEGMENTED_CELL_HPAD: f32 = 12.0;
+const SEGMENTED_TRANSITION: f32 = 0.28;
+const SEGMENTED_FONT: f32 = 11.5;
+
+pub fn segmented<T: Copy + PartialEq>(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash,
+    value: &mut T,
+    options: &[(T, &str)],
+) -> egui::Response {
+    debug_assert!(!options.is_empty(), "segmented requires at least 1 option");
+    let n = options.len().max(1) as f32;
+
+    // Measure the widest label so every cell gets the same width and the
+    // thumb glides cleanly between them.
+    let font_id = FontId::proportional(SEGMENTED_FONT);
+    let max_label_w = options
+        .iter()
+        .map(|(_, label)| {
+            ui.fonts(|f| f.layout_no_wrap(label.to_string(), font_id.clone(), Color32::WHITE))
+                .size()
+                .x
+        })
+        .fold(0.0_f32, f32::max);
+    let cell_outer_w = max_label_w + SEGMENTED_CELL_HPAD * 2.0;
+    let track_w = cell_outer_w * n + SEGMENTED_INNER_PAD * 2.0;
+
+    let (rect, mut row_resp) =
+        ui.allocate_exact_size(Vec2::new(track_w, SEGMENTED_HEIGHT), egui::Sense::hover());
+    let id = row_resp.id.with(id_source);
+
+    let selected_idx = options.iter().position(|(v, _)| *v == *value).unwrap_or(0);
+
+    // Animated thumb position (cell-index space).
+    let anim = ui.ctx().animate_value_with_time(
+        id.with("seg_thumb_anim"),
+        selected_idx as f32,
+        SEGMENTED_TRANSITION,
+    );
+
+    let track_rounding = Rounding::same(SEGMENTED_HEIGHT * 0.5);
+    ui.painter()
+        .rect_stroke(rect, track_rounding, Stroke::new(1.0, color::outline()));
+
+    // Thumb pill (interpolated cell), inset from the track stroke.
+    let inner = rect.shrink2(Vec2::new(SEGMENTED_INNER_PAD, SEGMENTED_INNER_PAD));
+    let cell_w = inner.width() / n;
+    let thumb_left = inner.left() + cell_w * anim;
+    let thumb_rect = egui::Rect::from_min_size(
+        egui::pos2(thumb_left, inner.top()),
+        Vec2::new(cell_w, inner.height()),
+    );
+    let thumb_rounding = Rounding::same(inner.height() * 0.5);
+    ui.painter()
+        .rect_filled(thumb_rect, thumb_rounding, color::primary_container());
+
+    // Cell click sensing + labels.
+    let outer_cell_w = rect.width() / n;
+    for (i, (v, label)) in options.iter().enumerate() {
+        let cell = egui::Rect::from_min_size(
+            egui::pos2(rect.left() + i as f32 * outer_cell_w, rect.top()),
+            Vec2::new(outer_cell_w, rect.height()),
+        );
+        let cell_resp = ui.interact(cell, id.with(("seg_cell", i)), egui::Sense::click());
+        if cell_resp.clicked() && *value != *v {
+            *value = *v;
+            row_resp.mark_changed();
+        }
+        // Hover state layer over inactive cells only.
+        if cell_resp.hovered() && i != selected_idx {
+            ui.painter().rect_filled(
+                cell.shrink2(Vec2::new(SEGMENTED_INNER_PAD, SEGMENTED_INNER_PAD)),
+                thumb_rounding,
+                with_alpha(color::on_surface(), 0.06),
+            );
+        }
+        // Label — selected cell uses on_primary_container so the text
+        // stays legible against the thumb fill.
+        let label_color = if i == selected_idx {
+            color::on_primary_container()
+        } else {
+            color::on_surface()
+        };
+        let galley =
+            ui.fonts(|f| f.layout_no_wrap(label.to_string(), font_id.clone(), label_color));
+        let pos = cell.center() - galley.size() * 0.5;
+        ui.painter().galley(pos, galley, label_color);
+    }
+
+    if (anim - selected_idx as f32).abs() > 0.001 {
+        ui.ctx().request_repaint();
+    }
+
+    row_resp
 }
 
 // -------------------------------------------------------------------------
@@ -806,7 +1145,7 @@ fn paint_state_layer(
     painter.circle_filled(
         rect.center(),
         radius_layer,
-        with_alpha(color::ON_SURFACE, alpha),
+        with_alpha(color::on_surface(), alpha),
     );
 }
 
@@ -838,7 +1177,7 @@ pub fn refresh_button(ui: &mut egui::Ui) -> egui::Response {
     paint_state_layer(&painter, &resp, rect, 14.0);
 
     // Hand-painted refresh glyph: ≈270° arc + arrowhead.
-    let icon_color = color::ON_SURFACE_VARIANT;
+    let icon_color = color::on_surface_variant();
     let stroke = Stroke::new(1.6, icon_color);
     let center = rect.center();
     let radius_icon = 7.0;
@@ -886,7 +1225,7 @@ pub fn folder_button(ui: &mut egui::Ui) -> egui::Response {
     paint_state_layer(&painter, &resp, rect, 14.0);
 
     // Folder pictogram — small tab on top, body below.
-    let icon_color = color::ON_SURFACE_VARIANT;
+    let icon_color = color::on_surface_variant();
     let stroke = Stroke::new(1.4, icon_color);
     let c = rect.center();
     let body = egui::Rect::from_center_size(egui::pos2(c.x, c.y + 1.0), Vec2::new(15.0, 11.0));
@@ -945,12 +1284,12 @@ pub fn modal_frame_with_margin(inner_margin: f32) -> egui::Frame {
 
 fn modal_frame_with_margin_opacity(inner_margin: f32, opacity: f32) -> egui::Frame {
     egui::Frame::none()
-        .fill(with_alpha(color::SURFACE_CONTAINER_HIGH, opacity))
+        .fill(with_alpha(color::surface_container_high(), opacity))
         .rounding(Rounding::same(radius::LG))
         .inner_margin(Margin::same(inner_margin))
         .stroke(Stroke::new(
             1.0,
-            with_alpha(color::OUTLINE_VARIANT, opacity),
+            with_alpha(color::outline_variant(), opacity),
         ))
         .shadow(egui::epaint::Shadow {
             offset: Vec2::new(0.0, 8.0),
@@ -1033,7 +1372,7 @@ pub fn modal_dialog_with_state<R>(
                     ui.horizontal(|ui| {
                         ui.label(
                             egui::RichText::new(title)
-                                .color(color::ON_SURFACE)
+                                .color(color::on_surface())
                                 .size(modal::TITLE_FONT)
                                 .strong(),
                         );
@@ -1114,7 +1453,7 @@ pub fn modal_dialog_sized_with_state<R>(
                     ui.horizontal(|ui| {
                         ui.label(
                             egui::RichText::new(title)
-                                .color(color::ON_SURFACE)
+                                .color(color::on_surface())
                                 .size(modal::TITLE_FONT)
                                 .strong(),
                         );
@@ -1162,7 +1501,7 @@ const INPUT_MARGIN: Vec2 = Vec2::new(10.0, 6.0);
 /// Build a faded `RichText` suitable for use as a `TextEdit` hint — dim
 /// enough to read as a placeholder, not as real input.
 pub fn hint_text(s: &str) -> egui::RichText {
-    egui::RichText::new(s).color(with_alpha(color::ON_SURFACE_VARIANT, INPUT_HINT_ALPHA))
+    egui::RichText::new(s).color(with_alpha(color::on_surface_variant(), INPUT_HINT_ALPHA))
 }
 
 /// If `response` lost focus on the same frame an IME event fired, re-grab
@@ -1278,9 +1617,12 @@ pub fn chip_palette(kind: &str) -> (Color32, Color32) {
     match kind.to_ascii_lowercase().as_str() {
         // Tertiary container — muted pink/rose. Distinct hue from primary
         // (purple) so it doesn't blend with the selected-item highlight.
-        "remote" => (color::TERTIARY_CONTAINER, color::ON_TERTIARY_CONTAINER),
+        "remote" => (color::tertiary_container(), color::on_tertiary_container()),
         // Neutral surface for Local — reads as a secondary tag.
-        _ => (color::SURFACE_CONTAINER_HIGHEST, color::ON_SURFACE_VARIANT),
+        _ => (
+            color::surface_container_highest(),
+            color::on_surface_variant(),
+        ),
     }
 }
 

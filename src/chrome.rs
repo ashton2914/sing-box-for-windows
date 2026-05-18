@@ -68,7 +68,7 @@ pub fn titlebar(ctx: &Context, main_hwnd: Option<usize>) {
         .exact_height(TITLEBAR_HEIGHT)
         .frame(
             egui::Frame::none()
-                .fill(color::SURFACE)
+                .fill(color::surface())
                 .inner_margin(Margin::ZERO),
         )
         .show_separator_line(false)
@@ -98,7 +98,7 @@ pub fn titlebar(ctx: &Context, main_hwnd: Option<usize>) {
 
             // ----- App title (left) -----
             let title_font = FontId::proportional(17.0);
-            let title_color = color::ON_SURFACE;
+            let title_color = color::on_surface();
             let title_galley = ui.fonts(|f| {
                 f.layout_no_wrap(
                     crate::APP_TITLE.to_string(),
@@ -152,7 +152,7 @@ pub fn titlebar(ctx: &Context, main_hwnd: Option<usize>) {
                     egui::pos2(rect.left(), rect.bottom() - 0.5),
                     egui::pos2(rect.right(), rect.bottom() - 0.5),
                 ],
-                Stroke::new(1.0, color::OUTLINE_VARIANT),
+                Stroke::new(1.0, color::outline_variant()),
             );
         });
 }
@@ -179,10 +179,10 @@ fn titlebar_button(ui: &mut egui::Ui, kind: TitleButton) -> egui::Response {
     let bg = if resp.hovered() {
         match kind {
             TitleButton::Close => Color32::from_rgb(196, 43, 28),
-            _ => theme::blend_over(color::SURFACE, color::ON_SURFACE, 0.10),
+            _ => theme::blend_over(color::surface(), color::on_surface(), 0.10),
         }
     } else {
-        color::SURFACE
+        color::surface()
     };
     if resp.hovered() {
         painter.rect_filled(rect, Rounding::ZERO, bg);
@@ -191,7 +191,7 @@ fn titlebar_button(ui: &mut egui::Ui, kind: TitleButton) -> egui::Response {
     let fg = if resp.hovered() && kind == TitleButton::Close {
         Color32::WHITE
     } else {
-        color::ON_SURFACE
+        color::on_surface()
     };
     let stroke = Stroke::new(1.0, fg);
     let cx = rect.center().x;
@@ -231,8 +231,28 @@ fn titlebar_button(ui: &mut egui::Ui, kind: TitleButton) -> egui::Response {
             paint_square_outline(&painter, left, top + off, inner_right, bottom, stroke);
         }
         TitleButton::Close => {
-            painter.line_segment([egui::pos2(left, top), egui::pos2(right, bottom)], stroke);
-            painter.line_segment([egui::pos2(left, bottom), egui::pos2(right, top)], stroke);
+            // Diagonals should be symmetric around the button center.
+            // The 0.5px offset used above helps horizontal/vertical
+            // glyphs land on the pixel grid, but it shifts an X's
+            // intersection off-center.
+            let close_left = cx - s;
+            let close_right = cx + s;
+            let close_top = cy - s;
+            let close_bottom = cy + s;
+            painter.line_segment(
+                [
+                    egui::pos2(close_left, close_top),
+                    egui::pos2(close_right, close_bottom),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(close_left, close_bottom),
+                    egui::pos2(close_right, close_top),
+                ],
+                stroke,
+            );
         }
     }
 
@@ -625,6 +645,6 @@ pub fn outline(ctx: &Context) {
     painter.rect_stroke(
         rect,
         Rounding::same(WINDOW_CORNER_RADIUS),
-        Stroke::new(1.0, color::OUTLINE_VARIANT),
+        Stroke::new(1.0, color::outline_variant()),
     );
 }

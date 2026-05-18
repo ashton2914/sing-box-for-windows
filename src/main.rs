@@ -84,8 +84,15 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         APP_TITLE,
         native_options,
-        Box::new(|cc| {
+        Box::new(move |cc| {
             setup_fonts(&cc.egui_ctx);
+            // Initial palette: derive from saved theme_mode so the first
+            // painted frame already matches the user's preference.
+            // System mode falls back to dark here (we have no system
+            // signal until the first `App::update`); App::update
+            // reconciles on frame 1 if the OS reports otherwise.
+            let initial_dark = startup_settings.theme_mode.resolve(true);
+            theme::set_dark(initial_dark);
             theme::apply(&cc.egui_ctx);
             let app = app::App::new(cc.egui_ctx.clone());
             Ok(Box::new(app))

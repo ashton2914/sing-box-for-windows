@@ -602,7 +602,7 @@ fn main_hwnd_from_frame(_frame: &eframe::Frame) -> Option<usize> {
 
 impl eframe::App for App {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        crate::theme::color::SURFACE.to_normalized_gamma_f32()
+        crate::theme::color::surface().to_normalized_gamma_f32()
     }
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
@@ -611,6 +611,24 @@ impl eframe::App for App {
         // focus mid-commit and accidentally bake the preedit (e.g. raw
         // pinyin "de'ji'd'j'e") into its buffer.
         crate::theme::swallow_enter_during_ime(ctx);
+
+        // Reconcile the active palette against the user's `theme_mode`
+        // preference + the current OS theme. Cheap (one atomic load
+        // and a struct-eq); only re-applies the egui Style when the
+        // resolved is_dark flag changed.
+        {
+            let system_is_dark = match frame.info().system_theme {
+                Some(eframe::Theme::Dark) => true,
+                Some(eframe::Theme::Light) => false,
+                None => true,
+            };
+            let want_dark = self.settings.theme_mode.resolve(system_is_dark);
+            if crate::theme::is_dark() != want_dark {
+                crate::theme::set_dark(want_dark);
+                crate::theme::apply(ctx);
+                ctx.request_repaint();
+            }
+        }
 
         if self.main_hwnd.is_none() {
             self.main_hwnd = main_hwnd_from_frame(frame);

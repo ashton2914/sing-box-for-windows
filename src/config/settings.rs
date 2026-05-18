@@ -34,6 +34,9 @@ pub struct Settings {
     /// When `true`, the app starts hidden and is available from the
     /// system tray immediately.
     pub silent_start: bool,
+    /// User preference for the visual theme. Defaults to following the
+    /// host OS (`ThemeMode::System`).
+    pub theme_mode: crate::theme::ThemeMode,
 }
 
 impl Default for Settings {
@@ -48,6 +51,7 @@ impl Default for Settings {
             update_interval_hours: 24,
             close_to_tray: false,
             silent_start: false,
+            theme_mode: crate::theme::ThemeMode::System,
         }
     }
 }
