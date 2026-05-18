@@ -204,8 +204,7 @@ pub fn restart_as_standard_user(working_dir: &Path) -> io::Result<()> {
         InitializeProcThreadAttributeList(std::ptr::null_mut(), 1, 0, &mut size);
         if size == 0 {
             CloseHandle(h_explorer);
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
+            return Err(io::Error::other(
                 "InitializeProcThreadAttributeList failed to report size",
             ));
         }
@@ -215,10 +214,9 @@ pub fn restart_as_standard_user(working_dir: &Path) -> io::Result<()> {
         if InitializeProcThreadAttributeList(attr_list, 1, 0, &mut size) == 0 {
             let err = GetLastError();
             CloseHandle(h_explorer);
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("InitializeProcThreadAttributeList(2) failed (error {err})"),
-            ));
+            return Err(io::Error::other(format!(
+                "InitializeProcThreadAttributeList(2) failed (error {err})"
+            )));
         }
 
         // 4. Add the PROC_THREAD_ATTRIBUTE_PARENT_PROCESS entry. The
@@ -238,10 +236,9 @@ pub fn restart_as_standard_user(working_dir: &Path) -> io::Result<()> {
             let err = GetLastError();
             DeleteProcThreadAttributeList(attr_list);
             CloseHandle(h_explorer);
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("UpdateProcThreadAttribute(PARENT_PROCESS) failed (error {err})"),
-            ));
+            return Err(io::Error::other(format!(
+                "UpdateProcThreadAttribute(PARENT_PROCESS) failed (error {err})"
+            )));
         }
 
         // 5. Spawn our exe with Explorer as its parent. The child
@@ -277,10 +274,9 @@ pub fn restart_as_standard_user(working_dir: &Path) -> io::Result<()> {
         CloseHandle(h_explorer);
 
         if ok == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("CreateProcessW(parent=explorer) failed (error {err})"),
-            ));
+            return Err(io::Error::other(format!(
+                "CreateProcessW(parent=explorer) failed (error {err})"
+            )));
         }
         if !pi.hThread.is_null() {
             CloseHandle(pi.hThread);
@@ -376,10 +372,10 @@ pub fn ensure_admin_task(working_dir: &Path, with_logon_trigger: bool) -> io::Re
 
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("schtasks /create failed: {}", stderr.trim()),
-        ));
+        return Err(io::Error::other(format!(
+            "schtasks /create failed: {}",
+            stderr.trim()
+        )));
     }
     Ok(())
 }
@@ -400,10 +396,10 @@ pub fn run_admin_task() -> io::Result<()> {
         .output()?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("schtasks /run failed: {}", stderr.trim()),
-        ));
+        return Err(io::Error::other(format!(
+            "schtasks /run failed: {}",
+            stderr.trim()
+        )));
     }
     Ok(())
 }
@@ -421,10 +417,10 @@ pub fn delete_admin_task() -> io::Result<()> {
             && !stderr.contains("cannot find")
             && !stderr.contains("unable to find")
         {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("schtasks /delete failed: {}", stderr.trim()),
-            ));
+            return Err(io::Error::other(format!(
+                "schtasks /delete failed: {}",
+                stderr.trim()
+            )));
         }
     }
     Ok(())

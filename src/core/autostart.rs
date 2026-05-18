@@ -73,7 +73,7 @@ pub fn set_enabled(enabled: bool) -> io::Result<()> {
             ])
             .status()?;
         if !status.success() {
-            return Err(io::Error::new(io::ErrorKind::Other, "reg add failed"));
+            return Err(io::Error::other("reg add failed"));
         }
     } else {
         // Delete the value if present; treat "not found" as success.
@@ -84,10 +84,10 @@ pub fn set_enabled(enabled: bool) -> io::Result<()> {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if !stderr.contains("unable to find") && !stderr.contains("cannot find") {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("reg delete failed: {}", stderr.trim()),
-                ));
+                return Err(io::Error::other(format!(
+                    "reg delete failed: {}",
+                    stderr.trim()
+                )));
             }
         }
     }

@@ -3,14 +3,11 @@
 //! Provides:
 //! * Runtime-swappable tonal palettes (dark + light, M3 purple seed)
 //! * Typography matching the M3 type scale (Title/Body/Label sizes)
-//! * Shape tokens (XS/SM/MD/LG/XL/Full)
-//! * Pre-styled component helpers: `card`, `filled_button`, `tonal_button`,
-//!   `outlined_button`, `text_button`, `fab`, `section_title`, `switch`,
-//!   `segmented`.
+//! * Shape tokens (XS/SM/MD/LG/Full)
+//! * Pre-styled component helpers: `filled_button`, `tonal_button`,
+//!   `text_button`, `fab`, `section_title`, `switch`, `segmented`.
 //!
 //! Reference: https://m3.material.io/
-
-#![allow(dead_code)]
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -198,10 +195,6 @@ pub mod color {
         current_palette().on_secondary_container
     }
     #[inline]
-    pub fn tertiary() -> Color32 {
-        current_palette().tertiary
-    }
-    #[inline]
     pub fn tertiary_container() -> Color32 {
         current_palette().tertiary_container
     }
@@ -275,7 +268,6 @@ pub mod radius {
     pub const SM: f32 = 8.0;
     pub const MD: f32 = 12.0;
     pub const LG: f32 = 16.0;
-    pub const XL: f32 = 28.0;
     pub const FULL: f32 = 9999.0;
 }
 
@@ -424,7 +416,6 @@ pub fn blend_over(base: Color32, top: Color32, top_alpha: f32) -> Color32 {
     )
 }
 
-pub const TRANSITION_FAST: f32 = 0.14;
 pub const TRANSITION_MODAL: f32 = 0.22;
 pub const TRANSITION_POPUP: f32 = 0.12;
 
@@ -456,18 +447,13 @@ pub fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
     )
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum ModalPhase {
+    #[default]
     Closed,
     Opening,
     Open,
     Closing,
-}
-
-impl Default for ModalPhase {
-    fn default() -> Self {
-        Self::Closed
-    }
 }
 
 struct ModalTransition {
@@ -567,17 +553,9 @@ fn modal_transition(ctx: &egui::Context, state: &mut ModalState) -> ModalTransit
 // Component helpers
 // -------------------------------------------------------------------------
 
-/// M3 "elevated card" — Surface-Container-Low, rounded, padded.
-/// Always expands to fill the available width of its parent so stacked cards
-/// share the same visual column.
-pub fn card<R>(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    let avail_w = ui.available_width();
-    card_with_width(ui, avail_w, content)
-}
-
-/// Same card as `card`, but with an explicit outer width. Use this for
-/// page-level cards whose width must be tied to the window, not to a
-/// ScrollArea's transient `available_width`.
+/// M3 "elevated card" with an explicit outer width. Use this for page-level
+/// cards whose width must be tied to the window, not to a ScrollArea's
+/// transient `available_width`.
 pub fn card_with_width<R>(
     ui: &mut egui::Ui,
     outer_width: f32,
@@ -654,15 +632,6 @@ pub fn tonal_button(text: impl Into<String>) -> egui::Button<'static> {
         .stroke(Stroke::new(1.0, color::secondary_container()))
 }
 
-/// M3 Outlined Button (medium emphasis, neutral).
-pub fn outlined_button(text: impl Into<String>) -> egui::Button<'static> {
-    egui::Button::new(button_text(text, color::primary()))
-        .fill(Color32::TRANSPARENT)
-        .rounding(Rounding::same(radius::FULL))
-        .min_size(BTN_MIN)
-        .stroke(Stroke::new(1.0, color::outline()))
-}
-
 /// M3 Text Button (low emphasis).
 pub fn text_button(text: impl Into<String>) -> egui::Button<'static> {
     egui::Button::new(button_text(text, color::primary()))
@@ -672,7 +641,7 @@ pub fn text_button(text: impl Into<String>) -> egui::Button<'static> {
         .stroke(Stroke::NONE)
 }
 
-/// Destructive variant of [`outlined_button`] using the error palette.
+/// Destructive outlined-style button using the error palette.
 pub fn destructive_button(text: impl Into<String>) -> egui::Button<'static> {
     egui::Button::new(button_text(text, color::error()))
         .fill(Color32::TRANSPARENT)
@@ -757,19 +726,6 @@ pub fn fab_button(ui: &mut egui::Ui, icon: FabIcon) -> egui::Response {
     response
 }
 
-/// 32dp icon button (square-ish, no fill).
-pub fn icon_button(text: impl Into<String>) -> egui::Button<'static> {
-    egui::Button::new(
-        egui::RichText::new(text.into())
-            .color(color::on_surface_variant())
-            .size(15.0),
-    )
-    .fill(Color32::TRANSPARENT)
-    .rounding(Rounding::same(radius::FULL))
-    .min_size(Vec2::new(32.0, 32.0))
-    .stroke(Stroke::NONE)
-}
-
 /// A small round close button — hand-painted × via two line segments.
 /// Avoids font-glyph fallback issues (e.g. U+2715 falling back to a tofu
 /// box on systems whose default egui font lacks that codepoint).
@@ -801,85 +757,6 @@ pub fn close_button(ui: &mut egui::Ui) -> egui::Response {
     let r = rect.shrink(inset);
     painter.line_segment([r.left_top(), r.right_bottom()], stroke);
     painter.line_segment([r.right_top(), r.left_bottom()], stroke);
-
-    resp
-}
-
-// -------------------------------------------------------------------------
-// Checkbox — single canonical M3-style checkbox used everywhere.
-//
-// Hand-painted to bypass egui's default toggle look (a tall stroked square
-// with no fill / no state-layer). Geometry:
-//   * 18dp rounded square box
-//   * 2dp stroke when unchecked (ON_SURFACE_VARIANT)
-//   * Solid PRIMARY fill + ON_PRIMARY checkmark when checked
-//   * Round state-layer (8% / 16% ON_SURFACE) on hover/active
-//   * 8dp gap, then a 13pt label in ON_SURFACE
-// -------------------------------------------------------------------------
-
-const CHECKBOX_BOX: f32 = 18.0;
-const CHECKBOX_GAP: f32 = 8.0;
-const CHECKBOX_LABEL_FONT: f32 = 13.0;
-
-pub fn checkbox(ui: &mut egui::Ui, checked: &mut bool, text: &str) -> egui::Response {
-    let label_galley = ui.fonts(|f| {
-        f.layout_no_wrap(
-            text.to_string(),
-            FontId::proportional(CHECKBOX_LABEL_FONT),
-            color::on_surface(),
-        )
-    });
-    let total = Vec2::new(
-        CHECKBOX_BOX + CHECKBOX_GAP + label_galley.size().x,
-        label_galley.size().y.max(CHECKBOX_BOX),
-    );
-    let (rect, mut resp) = ui.allocate_exact_size(total, egui::Sense::click());
-
-    if resp.clicked() {
-        *checked = !*checked;
-        resp.mark_changed();
-    }
-
-    let painter = ui.painter();
-    let box_center = egui::pos2(rect.left() + CHECKBOX_BOX * 0.5, rect.center().y);
-    let box_rect = egui::Rect::from_center_size(box_center, Vec2::splat(CHECKBOX_BOX));
-
-    // Round state-layer behind the box.
-    if resp.is_pointer_button_down_on() {
-        painter.circle_filled(
-            box_center,
-            CHECKBOX_BOX * 0.85,
-            with_alpha(color::on_surface(), 0.16),
-        );
-    } else if resp.hovered() {
-        painter.circle_filled(
-            box_center,
-            CHECKBOX_BOX * 0.85,
-            with_alpha(color::on_surface(), 0.08),
-        );
-    }
-
-    let r = Rounding::same(3.0);
-    if *checked {
-        painter.rect_filled(box_rect, r, color::primary());
-        // Two-segment checkmark.
-        let stroke = Stroke::new(2.0, color::on_primary());
-        let tl = box_rect.left_top();
-        let p1 = tl + Vec2::new(CHECKBOX_BOX * 0.22, CHECKBOX_BOX * 0.52);
-        let p2 = tl + Vec2::new(CHECKBOX_BOX * 0.42, CHECKBOX_BOX * 0.72);
-        let p3 = tl + Vec2::new(CHECKBOX_BOX * 0.78, CHECKBOX_BOX * 0.32);
-        painter.line_segment([p1, p2], stroke);
-        painter.line_segment([p2, p3], stroke);
-    } else {
-        let stroke = Stroke::new(2.0, color::on_surface_variant());
-        painter.rect_stroke(box_rect, r, stroke);
-    }
-
-    let text_pos = egui::pos2(
-        box_rect.right() + CHECKBOX_GAP,
-        rect.center().y - label_galley.size().y * 0.5,
-    );
-    painter.galley(text_pos, label_galley, color::on_surface());
 
     resp
 }
@@ -1269,19 +1146,6 @@ pub mod modal {
     pub const BACKDROP_ALPHA: u8 = 80;
 }
 
-/// The standard modal frame: SURFACE_CONTAINER_HIGH fill, LG rounding,
-/// OUTLINE_VARIANT 1dp stroke, soft shadow.
-pub fn modal_frame() -> egui::Frame {
-    modal_frame_with_margin(modal::INNER_MARGIN)
-}
-
-/// Modal frame with caller-controlled inner margin. Kept separate from
-/// [`modal_frame`] so small viewport dialogs can reduce padding without
-/// changing the canonical look of normal confirmation/input dialogs.
-pub fn modal_frame_with_margin(inner_margin: f32) -> egui::Frame {
-    modal_frame_with_margin_opacity(inner_margin, 1.0)
-}
-
 fn modal_frame_with_margin_opacity(inner_margin: f32, opacity: f32) -> egui::Frame {
     egui::Frame::none()
         .fill(with_alpha(color::surface_container_high(), opacity))
@@ -1299,11 +1163,10 @@ fn modal_frame_with_margin_opacity(inner_margin: f32, opacity: f32) -> egui::Fra
         })
 }
 
-pub struct ModalResult<R> {
+pub struct ModalResult {
     /// True after a requested close has finished its exit animation.
     /// Caller can then dismiss the backing dialog state.
     pub close_requested: bool,
-    pub inner: R,
 }
 
 /// Render a modal dialog and return what its body produced plus whether its
@@ -1318,7 +1181,7 @@ pub fn modal_dialog<R>(
     width: f32,
     closable: bool,
     add_contents: impl FnOnce(&mut egui::Ui, &mut bool) -> R,
-) -> ModalResult<R> {
+) -> ModalResult {
     let state_id = egui::Id::new((id, "animation_state"));
     let mut state = ctx.data_mut(|data| data.get_temp::<ModalState>(state_id).unwrap_or_default());
     let result = modal_dialog_with_state(ctx, id, title, width, closable, &mut state, add_contents);
@@ -1334,7 +1197,7 @@ pub fn modal_dialog_with_state<R>(
     closable: bool,
     state: &mut ModalState,
     add_contents: impl FnOnce(&mut egui::Ui, &mut bool) -> R,
-) -> ModalResult<R> {
+) -> ModalResult {
     let screen = ctx.screen_rect();
     let transition = modal_transition(ctx, state);
     let open_t = transition.t;
@@ -1352,7 +1215,7 @@ pub fn modal_dialog_with_state<R>(
             );
         });
 
-    let area = egui::Area::new(egui::Id::new(id))
+    egui::Area::new(egui::Id::new(id))
         .order(egui::Order::Foreground)
         .anchor(
             egui::Align2::CENTER_CENTER,
@@ -1399,13 +1262,13 @@ pub fn modal_dialog_with_state<R>(
 
     ModalResult {
         close_requested: transition.close_finished,
-        inner: area.inner,
     }
 }
 
 /// Same chrome/behavior as [`modal_dialog_with_state`], but the caller
 /// controls the maximum content height. Use for long, scrollable modal
 /// bodies that must track the current viewport size exactly.
+#[allow(clippy::too_many_arguments)]
 pub fn modal_dialog_sized_with_state<R>(
     ctx: &egui::Context,
     id: &str,
@@ -1416,7 +1279,7 @@ pub fn modal_dialog_sized_with_state<R>(
     closable: bool,
     state: &mut ModalState,
     add_contents: impl FnOnce(&mut egui::Ui, f32, &mut bool) -> R,
-) -> ModalResult<R> {
+) -> ModalResult {
     let screen = ctx.screen_rect();
     let transition = modal_transition(ctx, state);
     let open_t = transition.t;
@@ -1434,7 +1297,7 @@ pub fn modal_dialog_sized_with_state<R>(
             );
         });
 
-    let area = egui::Area::new(egui::Id::new(id))
+    egui::Area::new(egui::Id::new(id))
         .order(egui::Order::Foreground)
         .anchor(
             egui::Align2::CENTER_CENTER,
@@ -1480,7 +1343,6 @@ pub fn modal_dialog_sized_with_state<R>(
 
     ModalResult {
         close_requested: transition.close_finished,
-        inner: area.inner,
     }
 }
 

@@ -313,9 +313,7 @@ fn strip_ansi(s: &str) -> String {
 
 /// UTF-8 leading-byte → total byte length of the encoded scalar.
 fn utf8_char_width(b: u8) -> usize {
-    if b < 0x80 {
-        1
-    } else if b < 0xC0 {
+    if b < 0xC0 {
         1 // continuation byte, treat as single (defensive)
     } else if b < 0xE0 {
         2

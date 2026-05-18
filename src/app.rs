@@ -273,17 +273,14 @@ impl App {
     /// `persist_settings` (after every UI mutation).
     ///
     /// Coupling rules — chosen to match the PowerToys autostart pattern:
-    ///   * `always_admin` ON  + `auto_start` ON → task with LogonTrigger
-    ///                                            handles the auto-launch;
-    ///                                            the `HKCU\...\Run` key is
-    ///                                            removed (avoids dual launch).
-    ///   * `always_admin` ON  + `auto_start` OFF → on-demand task only;
-    ///                                             user-launched std-user
-    ///                                             instance silently
-    ///                                             promotes via
-    ///                                             `schtasks /run`.
-    ///   * `always_admin` OFF + `auto_start` ON → no task; Run key is set.
-    ///   * `always_admin` OFF + `auto_start` OFF → no task; no Run key.
+    /// * `always_admin` ON  + `auto_start` ON → task with LogonTrigger
+    ///   handles the auto-launch; the `HKCU\...\Run` key is removed
+    ///   (avoids dual launch).
+    /// * `always_admin` ON  + `auto_start` OFF → on-demand task only;
+    ///   user-launched std-user instance silently promotes via
+    ///   `schtasks /run`.
+    /// * `always_admin` OFF + `auto_start` ON → no task; Run key is set.
+    /// * `always_admin` OFF + `auto_start` OFF → no task; no Run key.
     fn sync_persistent_state(&mut self) {
         use crate::core::{autostart, elevation};
 

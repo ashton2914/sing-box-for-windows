@@ -411,22 +411,11 @@ fn popup_combo_row(
 /// Custom ComboBox replacement that paints a real rounded-pill chip next
 /// to each config name. Built on top of [`popup_combo`].
 fn config_combo(ui: &mut egui::Ui, app: &mut App, width: f32) {
-    // Snapshot config data so we don't borrow `app` across the popup closure.
-    let configs_snapshot: Vec<(String, String, String)> = app
-        .configs
-        .iter()
-        .map(|c| {
-            (
-                c.slug.clone(),
-                c.metadata.name.clone(),
-                c.metadata.source.kind_label().to_string(),
-            )
-        })
-        .collect();
-    let current_selected = app.settings.selected_config.clone();
+    let configs = &app.configs;
+    let current_selected = app.settings.selected_config.as_deref();
     let selected_summary = app
         .selected_entry()
-        .map(|e| (e.metadata.name.clone(), e.metadata.source.kind_label()));
+        .map(|e| (e.metadata.name.as_str(), e.metadata.source.kind_label()));
 
     let picked = popup_combo(
         ui,
@@ -438,8 +427,9 @@ fn config_combo(ui: &mut egui::Ui, app: &mut App, width: f32) {
             let name_font = egui::FontId::proportional(14.0);
             let center_y = inner.center().y;
             if let Some((name, kind)) = &selected_summary {
-                let name_galley =
-                    ui.fonts(|f| f.layout_no_wrap(name.clone(), name_font, color::on_surface()));
+                let name_galley = ui.fonts(|f| {
+                    f.layout_no_wrap((*name).to_owned(), name_font, color::on_surface())
+                });
                 let ns = name_galley.size();
                 painter.galley(
                     egui::pos2(inner.left(), center_y - ns.y * 0.5),
@@ -465,20 +455,23 @@ fn config_combo(ui: &mut egui::Ui, app: &mut App, width: f32) {
             }
         },
         |ui| {
-            if configs_snapshot.is_empty() {
+            if configs.is_empty() {
                 ui.label(
                     egui::RichText::new("(no configs — click + Add)")
                         .color(color::on_surface_variant()),
                 );
                 return None;
             }
-            for (slug, name, kind) in &configs_snapshot {
-                let selected = current_selected.as_deref() == Some(slug.as_str());
+            for config in configs {
+                let slug = config.slug.as_str();
+                let name = config.metadata.name.as_str();
+                let kind = config.metadata.source.kind_label();
+                let selected = current_selected == Some(slug);
                 let clicked = popup_combo_row(ui, 32.0, selected, |ui, p, inner| {
                     let cy = inner.center().y;
                     let name_galley = ui.fonts(|f| {
                         f.layout_no_wrap(
-                            name.clone(),
+                            name.to_owned(),
                             egui::FontId::proportional(14.0),
                             color::on_surface(),
                         )
@@ -494,7 +487,7 @@ fn config_combo(ui: &mut egui::Ui, app: &mut App, width: f32) {
                     let _ = theme::paint_chip(ui, p, chip_center, kind);
                 });
                 if clicked {
-                    return Some(slug.clone());
+                    return Some(slug.to_owned());
                 }
             }
             None
@@ -512,9 +505,8 @@ fn config_combo(ui: &mut egui::Ui, app: &mut App, width: f32) {
 /// Hand-painted core selector — same combo language as `config_combo` so
 /// the Settings card and the Configs card read as one design system.
 fn core_combo(ui: &mut egui::Ui, app: &mut App, width: f32) {
-    let cores_snapshot: Vec<String> = app.cores.clone();
-    let current = app.settings.selected_core.clone();
-    let current_label = current.clone();
+    let cores = &app.cores;
+    let current = app.settings.selected_core.as_deref();
 
     let picked = popup_combo(
         ui,
@@ -523,7 +515,7 @@ fn core_combo(ui: &mut egui::Ui, app: &mut App, width: f32) {
         32.0,
         |ui, painter, inner, _content_right| {
             let name_font = egui::FontId::proportional(13.5);
-            let (text, color_) = match current_label.as_deref() {
+            let (text, color_) = match current {
                 Some(name) => (name.to_string(), color::on_surface()),
                 None => ("(none)".to_string(), color::on_surface_variant()),
             };
@@ -536,20 +528,20 @@ fn core_combo(ui: &mut egui::Ui, app: &mut App, width: f32) {
             );
         },
         |ui| {
-            if cores_snapshot.is_empty() {
+            if cores.is_empty() {
                 ui.label(
                     egui::RichText::new("(no *.exe under core/)")
                         .color(color::on_surface_variant()),
                 );
                 return None;
             }
-            for name in &cores_snapshot {
-                let selected = current.as_deref() == Some(name.as_str());
+            for name in cores {
+                let selected = current == Some(name.as_str());
                 let clicked = popup_combo_row(ui, 28.0, selected, |ui, p, inner| {
                     let cy = inner.center().y;
                     let g = ui.fonts(|f| {
                         f.layout_no_wrap(
-                            name.clone(),
+                            name.to_owned(),
                             egui::FontId::proportional(13.5),
                             color::on_surface(),
                         )
@@ -561,7 +553,7 @@ fn core_combo(ui: &mut egui::Ui, app: &mut App, width: f32) {
                     );
                 });
                 if clicked {
-                    return Some(Some(name.clone()));
+                    return Some(Some(name.to_owned()));
                 }
             }
             None
@@ -949,9 +941,9 @@ fn subtle_divider(ui: &mut egui::Ui) {
 /// Small pill chip showing the current process integrity. Painted
 /// inline (no extra row of vertical space) and color-coded so a glance
 /// at the top card tells the user whether TUN mode will work:
-///   * Administrator → success-tinted pill
-///   * Standard user → tertiary-tinted pill (the same neutral hue used
-///                     for the not-yet-elevated shield in the Settings card)
+/// * Administrator → success-tinted pill
+/// * Standard user → tertiary-tinted pill (the same neutral hue used
+///   for the not-yet-elevated shield in the Settings card)
 fn elevation_pill(ui: &mut egui::Ui) {
     use crate::core::elevation;
 

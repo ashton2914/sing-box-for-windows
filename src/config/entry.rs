@@ -34,14 +34,6 @@ impl Source {
             Source::Remote { .. } => "Remote",
         }
     }
-
-    #[allow(dead_code)]
-    pub fn detail(&self) -> String {
-        match self {
-            Source::Local { path } => path.display().to_string(),
-            Source::Remote { url } => url.clone(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
