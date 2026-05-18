@@ -7,6 +7,7 @@ use crate::config::settings::{
     DEFAULT_UPDATE_INTERVAL_HOURS,
 };
 use crate::core::shell;
+use crate::log_bus::LogEvent;
 use crate::theme::{self, color, radius};
 
 #[derive(Clone, Copy)]
@@ -27,7 +28,7 @@ impl Default for MainScrollState {
 }
 
 const MAIN_SCROLL_BOTTOM_MARGIN: f32 = 12.0;
-const SETTINGS_INPUT_HEIGHT: f32 = 32.0;
+const SETTINGS_INPUT_HEIGHT: f32 = 16.0;
 const SETTINGS_INPUT_SHORT: [f32; 2] = [72.0, SETTINGS_INPUT_HEIGHT];
 const SETTINGS_INPUT_MEDIUM: [f32; 2] = [104.0, SETTINGS_INPUT_HEIGHT];
 const SETTINGS_INPUT_ADDRESS: [f32; 2] = [180.0, SETTINGS_INPUT_HEIGHT];
@@ -1423,19 +1424,19 @@ fn run_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
                 ui.set_max_width(log_inner_width);
                 ui.set_min_height(LOG_HEIGHT);
 
-                // The log view has dense monospace text. Keep a reserved
-                // gutter so scrollbars never cover text, but let the handle
-                // itself auto-hide when idle.
+                // The log view has dense monospace text. Keep the scrollbar
+                // permanently visible (no auto-hide) and reserve a gutter so
+                // it never overlaps text.
                 {
                     let scroll = &mut ui.spacing_mut().scroll;
-                    scroll.floating = true;
-                    scroll.floating_allocated_width = 10.0;
-                    scroll.floating_width = 3.0;
-                    scroll.bar_width = 6.0;
+                    scroll.floating = false;
+                    scroll.bar_width = 8.0;
+                    scroll.bar_inner_margin = 2.0;
+                    scroll.bar_outer_margin = 0.0;
                     scroll.dormant_background_opacity = 0.0;
-                    scroll.dormant_handle_opacity = 0.0;
+                    scroll.dormant_handle_opacity = 0.55;
                     scroll.active_background_opacity = 0.0;
-                    scroll.active_handle_opacity = 0.65;
+                    scroll.active_handle_opacity = 0.75;
                     scroll.interact_background_opacity = 0.0;
                     scroll.interact_handle_opacity = 0.9;
                 }
@@ -1451,29 +1452,53 @@ fn run_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
 
                 egui::ScrollArea::both()
                     .auto_shrink([false; 2])
+                    .drag_to_scroll(false)
                     .max_height(LOG_BODY_HEIGHT)
-                    .stick_to_bottom(true)
+                    .stick_to_bottom(app.log_view_snapshot.is_none())
                     .show(ui, |ui| {
                         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-                        if app.logs.is_empty() {
+                        // Disable text selection entirely in the log body —
+                        // labels render as non-interactive so dragging never
+                        // starts a selection.
+                        ui.style_mut().interaction.selectable_labels = false;
+                        let snapshot = app.log_view_snapshot.as_deref();
+                        let visible_empty = snapshot
+                            .map(|s| s.is_empty())
+                            .unwrap_or(app.logs.is_empty());
+                        if visible_empty {
                             ui.label(
                                 egui::RichText::new("(no logs yet)")
                                     .color(color::on_surface_variant()),
                             );
                         }
-                        for log in &app.logs {
+                        let render_entry = |ui: &mut egui::Ui, log: &LogEvent| {
                             ui.horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new(&log.timestamp)
-                                        .color(color::on_surface_variant())
-                                        .monospace(),
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&log.timestamp)
+                                            .color(color::on_surface_variant())
+                                            .monospace(),
+                                    )
+                                    .selectable(false),
                                 );
-                                ui.label(
-                                    egui::RichText::new(&log.message)
-                                        .color(color::on_surface())
-                                        .monospace(),
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&log.message)
+                                            .color(color::on_surface())
+                                            .monospace(),
+                                    )
+                                    .selectable(false),
                                 );
                             });
+                        };
+                        if let Some(snapshot) = snapshot {
+                            for log in snapshot {
+                                render_entry(ui, log);
+                            }
+                        } else {
+                            for log in &app.logs {
+                                render_entry(ui, log);
+                            }
                         }
                     });
             });
@@ -1490,33 +1515,145 @@ fn log_status_toolbar(ui: &mut egui::Ui, app: &mut App) {
         .running_for()
         .map(format_duration)
         .unwrap_or_else(|| "stopped".to_owned());
-    let text = format!("Time {now}    Uptime {uptime}");
+    let log_level = current_log_level(app);
+    let clash_webui = current_clash_webui(app);
+    let text = format!("Level {log_level}    Time {now}    Uptime {uptime}");
 
-    ui.label(
-        egui::RichText::new(text)
-            .color(color::on_surface_variant())
-            .size(12.0)
-            .monospace(),
-    );
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        let clear = egui::Button::new(
-            egui::RichText::new("Clear")
-                .color(color::primary())
-                .size(12.0),
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(text)
+                .color(color::on_surface_variant())
+                .size(12.0)
+                .monospace(),
         )
-        .fill(egui::Color32::TRANSPARENT)
-        .rounding(egui::Rounding::same(radius::FULL))
-        .min_size(egui::vec2(40.0, 22.0))
-        .stroke(egui::Stroke::NONE);
-
+        .selectable(false),
+    )
+    .on_hover_cursor(egui::CursorIcon::Default);
+    if let Some(webui) = clash_webui.as_ref() {
+        ui.add_space(10.0);
         if ui
-            .add_enabled(!app.logs.is_empty(), clear)
+            .add(
+                egui::Label::new(
+                    egui::RichText::new("WebUI ready")
+                        .color(color::primary())
+                        .size(12.0)
+                        .monospace()
+                        .underline(),
+                )
+                .selectable(false)
+                .sense(egui::Sense::click()),
+            )
+            .on_hover_cursor(egui::CursorIcon::Default)
+            .on_hover_text(format!("Open WebUI: {}", webui.url))
+            .clicked()
+        {
+            if let Err(e) = shell::open_url(&webui.url) {
+                app.last_error = Some(format!("Open WebUI failed: {e}"));
+            }
+        }
+    }
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let visible_empty = app
+            .log_view_snapshot
+            .as_ref()
+            .map(|s| s.is_empty())
+            .unwrap_or(app.logs.is_empty());
+        if ui
+            .add_enabled(!visible_empty, log_toolbar_button("Clear"))
             .on_hover_text("Clear displayed logs")
             .clicked()
         {
             app.logs.clear();
+            app.log_view_snapshot = None;
+        }
+
+        let paused = app.log_view_snapshot.is_some();
+        let (label, hover) = if paused {
+            ("Resume", "Resume log refresh")
+        } else {
+            ("Pause", "Pause log refresh to read details")
+        };
+        if ui
+            .add(log_toolbar_button(label))
+            .on_hover_text(hover)
+            .clicked()
+        {
+            if paused {
+                app.log_view_snapshot = None;
+            } else {
+                app.log_view_snapshot = Some(app.logs.iter().cloned().collect());
+            }
         }
     });
+}
+
+struct ClashWebUiInfo {
+    url: String,
+}
+
+fn log_toolbar_button(text: &'static str) -> egui::Button<'static> {
+    egui::Button::new(egui::RichText::new(text).color(color::primary()).size(12.0))
+        .fill(egui::Color32::TRANSPARENT)
+        .rounding(egui::Rounding::same(radius::FULL))
+        .min_size(egui::vec2(40.0, 22.0))
+        .stroke(egui::Stroke::NONE)
+}
+
+fn current_log_level(app: &App) -> String {
+    if app.settings.log_override.enabled {
+        return if app.settings.log_override.disabled {
+            "disabled".to_owned()
+        } else {
+            log_level_label(app.settings.log_override.level).to_owned()
+        };
+    }
+
+    read_selected_config_json(app)
+        .and_then(|config| {
+            let log = config.get("log")?;
+            if log
+                .get("disabled")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            {
+                Some("disabled".to_owned())
+            } else {
+                log.get("level")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            }
+        })
+        .unwrap_or_else(|| "info".to_owned())
+}
+
+fn current_clash_webui(app: &App) -> Option<ClashWebUiInfo> {
+    let config = read_selected_config_json(app)?;
+    let clash_api = config.get("experimental")?.get("clash_api")?;
+    let controller = non_empty_json_str(clash_api.get("external_controller")?)?;
+    non_empty_json_str(clash_api.get("external_ui")?)?;
+
+    Some(ClashWebUiInfo {
+        url: clash_webui_url(controller),
+    })
+}
+
+fn read_selected_config_json(app: &App) -> Option<serde_json::Value> {
+    let entry = app.selected_entry()?;
+    let raw = std::fs::read_to_string(entry.config_file()).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+fn non_empty_json_str(value: &serde_json::Value) -> Option<&str> {
+    let value = value.as_str()?.trim();
+    (!value.is_empty()).then_some(value)
+}
+
+fn clash_webui_url(controller: &str) -> String {
+    let mut controller = controller.trim().replace("0.0.0.0", "127.0.0.1");
+    if !controller.starts_with("http://") && !controller.starts_with("https://") {
+        controller = format!("http://{controller}");
+    }
+    format!("{}/ui/", controller.trim_end_matches('/'))
 }
 
 fn log_toolbar_divider(ui: &mut egui::Ui, width: f32) {
@@ -2108,6 +2245,7 @@ fn about_modal(ctx: &egui::Context, app: &mut App) {
                             ui.set_max_width(inner_width);
                             egui::ScrollArea::vertical()
                                 .auto_shrink([false; 2])
+                                .drag_to_scroll(false)
                                 .max_height(180.0)
                                 .id_source("about_license_scroll")
                                 .show(ui, |ui| {

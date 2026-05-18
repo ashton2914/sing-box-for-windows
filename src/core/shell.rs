@@ -44,6 +44,36 @@ pub fn open(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Opens a URL with the OS default browser.
+pub fn open_url(url: &str) -> Result<()> {
+    if url.trim().is_empty() {
+        return Err(anyhow!("URL is empty"));
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        use std::process::Command;
+
+        use crate::core::win::CREATE_NO_WINDOW;
+
+        Command::new("cmd")
+            .args(["/c", "start", ""])
+            .arg(url)
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .context("failed to open URL")?;
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = url;
+        return Err(anyhow!("Windows only"));
+    }
+
+    Ok(())
+}
+
 /// Recursively removes everything inside `dir`, then recreates it empty.
 /// `dir` itself is preserved so it can stay opened in Explorer.
 pub fn purge_directory(dir: &Path) -> Result<()> {

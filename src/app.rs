@@ -142,6 +142,10 @@ pub struct App {
     pub cores: Vec<String>,
 
     pub logs: VecDeque<LogEvent>,
+    /// When `Some`, log rendering is frozen to this snapshot so the
+    /// user can read existing lines. Background events keep filling
+    /// `logs` normally; resuming drops the snapshot.
+    pub log_view_snapshot: Option<Vec<LogEvent>>,
     pub last_error: Option<String>,
     pub last_info: Option<String>,
 
@@ -231,6 +235,7 @@ impl App {
             configs,
             cores,
             logs: VecDeque::with_capacity(LOG_BACKLOG_CAP),
+            log_view_snapshot: None,
             last_error: startup_warning,
             last_info: None,
             loopback_busy: false,
