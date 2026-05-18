@@ -2,6 +2,10 @@ use eframe::egui;
 
 use crate::app::{App, BgCmd, SourceKind};
 use crate::config::entry::Source;
+use crate::config::settings::{
+    InboundOverrideKind, DEFAULT_MIXED_LISTEN, DEFAULT_MIXED_LISTEN_PORT,
+    DEFAULT_UPDATE_INTERVAL_HOURS,
+};
 use crate::core::shell;
 use crate::theme::{self, color, radius};
 
@@ -23,6 +27,25 @@ impl Default for MainScrollState {
 }
 
 const MAIN_SCROLL_BOTTOM_MARGIN: f32 = 12.0;
+const SETTINGS_INPUT_HEIGHT: f32 = 32.0;
+const SETTINGS_INPUT_SHORT: [f32; 2] = [72.0, SETTINGS_INPUT_HEIGHT];
+const SETTINGS_INPUT_MEDIUM: [f32; 2] = [104.0, SETTINGS_INPUT_HEIGHT];
+const SETTINGS_INPUT_ADDRESS: [f32; 2] = [180.0, SETTINGS_INPUT_HEIGHT];
+
+fn log_scroll_blocking_rect_id() -> egui::Id {
+    egui::Id::new("log_scroll_blocking_rect")
+}
+
+fn popup_scroll_blocking_id() -> egui::Id {
+    egui::Id::new("popup_scroll_blocking")
+}
+
+fn modal_window_open(app: &App) -> bool {
+    app.add_dialog.open
+        || app.delete_confirm.is_some()
+        || app.destroy_confirm_open
+        || app.about_open
+}
 
 pub fn show(ui: &mut egui::Ui, app: &mut App) {
     // Keep the stacked page cards visually centered in the actual
@@ -52,17 +75,32 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
                 .data(|data| data.get_temp::<MainScrollState>(scroll_id))
                 .unwrap_or_default();
             let max_offset = (scroll_state.content_height - viewport_rect.height()).max(0.0);
+            let popup_scroll_blocked = ui.ctx().data(|data| {
+                data.get_temp::<bool>(popup_scroll_blocking_id())
+                    .unwrap_or(false)
+            });
+            ui.ctx()
+                .data_mut(|data| data.insert_temp(popup_scroll_blocking_id(), false));
+            let background_scroll_blocked = modal_window_open(app) || popup_scroll_blocked;
             // Use egui's `smooth_scroll_delta`: it folds notched wheel ticks
             // into a short easing tail so the page doesn't stair-step. The
             // earlier raw-delta variant felt jittery, and a custom
             // exponential approach felt unnatural, so we trust egui's tail.
             let scroll_delta_y = ui.ctx().input(|i| i.smooth_scroll_delta.y);
-            let pointer_in_viewport = ui
-                .ctx()
-                .input(|i| i.pointer.hover_pos())
-                .is_some_and(|pos| viewport_rect.contains(pos));
+            let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos());
+            let pointer_in_viewport = pointer_pos.is_some_and(|pos| viewport_rect.contains(pos));
+            let pointer_over_log_scroll = pointer_pos.is_some_and(|pos| {
+                ui.ctx().data(|data| {
+                    data.get_temp::<egui::Rect>(log_scroll_blocking_rect_id())
+                        .is_some_and(|rect| rect.contains(pos))
+                })
+            });
 
-            if pointer_in_viewport && scroll_delta_y.abs() > 0.0 {
+            if pointer_in_viewport
+                && !background_scroll_blocked
+                && !pointer_over_log_scroll
+                && scroll_delta_y.abs() > 0.0
+            {
                 let requested = scroll_state.offset_y - scroll_delta_y;
                 scroll_state.offset_y = if requested > scroll_state.offset_y {
                     requested.min(max_offset.max(scroll_state.offset_y))
@@ -274,6 +312,10 @@ fn popup_combo<T>(
         is_open,
         theme::TRANSITION_POPUP,
     ));
+    if is_open || open_t > 0.01 {
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(popup_scroll_blocking_id(), true));
+    }
 
     let outline = egui::Stroke::new(1.0, color::outline_variant());
     let surface = color::surface_container();
@@ -568,6 +610,165 @@ fn core_combo(ui: &mut egui::Ui, app: &mut App, width: f32) {
     }
 }
 
+fn inbound_override_settings(ui: &mut egui::Ui, app: &mut App) {
+    let mut changed = false;
+    if theme::switch(
+        ui,
+        &mut app.settings.inbound_override.enabled,
+        "Override inbound configuration",
+    )
+    .changed()
+    {
+        changed = true;
+    }
+
+    if app.settings.inbound_override.enabled {
+        ui.horizontal(|ui| {
+            ui.label(theme::setting_label("Override inbound with"));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if inbound_override_kind_combo(ui, &mut app.settings.inbound_override.kind, 132.0)
+                    .is_some()
+                {
+                    changed = true;
+                }
+            });
+        });
+
+        match app.settings.inbound_override.kind {
+            InboundOverrideKind::MixedIn => {
+                ui.horizontal(|ui| {
+                    ui.label(theme::setting_label("Listen address"));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if theme::setting_input_singleline_sized(
+                            ui,
+                            &mut app.settings.inbound_override.mixed_listen,
+                            DEFAULT_MIXED_LISTEN,
+                            SETTINGS_INPUT_ADDRESS,
+                        )
+                        .changed()
+                        {
+                            changed = true;
+                        }
+                    });
+                });
+                ui.horizontal(|ui| {
+                    ui.label(theme::setting_label("Listen port"));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let port_hint = DEFAULT_MIXED_LISTEN_PORT.to_string();
+                        if theme::setting_input_singleline_sized(
+                            ui,
+                            &mut app.settings.inbound_override.mixed_listen_port,
+                            &port_hint,
+                            SETTINGS_INPUT_SHORT,
+                        )
+                        .changed()
+                        {
+                            changed = true;
+                        }
+                    });
+                });
+            }
+            InboundOverrideKind::Tun => {
+                ui.horizontal(|ui| {
+                    ui.label(theme::setting_label("MTU"));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if theme::setting_input_singleline_sized(
+                            ui,
+                            &mut app.settings.inbound_override.tun_mtu,
+                            "default",
+                            SETTINGS_INPUT_MEDIUM,
+                        )
+                        .changed()
+                        {
+                            changed = true;
+                        }
+                    });
+                });
+                if theme::switch(
+                    ui,
+                    &mut app.settings.inbound_override.tun_endpoint_independent_nat,
+                    "Endpoint independent NAT",
+                )
+                .changed()
+                {
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    if changed {
+        app.persist_settings();
+    }
+}
+
+fn inbound_override_kind_combo(
+    ui: &mut egui::Ui,
+    value: &mut InboundOverrideKind,
+    width: f32,
+) -> Option<InboundOverrideKind> {
+    let current = *value;
+    let picked = popup_combo(
+        ui,
+        "inbound_override_kind_combo",
+        width,
+        28.0,
+        |ui, painter, inner, _content_right| {
+            let text = inbound_override_kind_label(current);
+            let galley = ui.fonts(|f| {
+                f.layout_no_wrap(
+                    text.to_owned(),
+                    egui::FontId::proportional(13.0),
+                    color::on_surface(),
+                )
+            });
+            painter.galley(
+                egui::pos2(inner.left(), inner.center().y - galley.size().y * 0.5),
+                galley,
+                color::on_surface(),
+            );
+        },
+        |ui| {
+            for option in [InboundOverrideKind::MixedIn, InboundOverrideKind::Tun] {
+                let selected = current == option;
+                let clicked = popup_combo_row(ui, 28.0, selected, |ui, painter, inner| {
+                    let text = inbound_override_kind_label(option);
+                    let galley = ui.fonts(|f| {
+                        f.layout_no_wrap(
+                            text.to_owned(),
+                            egui::FontId::proportional(13.0),
+                            color::on_surface(),
+                        )
+                    });
+                    painter.galley(
+                        egui::pos2(inner.left(), inner.center().y - galley.size().y * 0.5),
+                        galley,
+                        color::on_surface(),
+                    );
+                });
+                if clicked {
+                    return Some(option);
+                }
+            }
+            None
+        },
+    );
+    if let Some(picked) = picked {
+        if *value != picked {
+            *value = picked;
+            return Some(picked);
+        }
+    }
+    None
+}
+
+fn inbound_override_kind_label(kind: InboundOverrideKind) -> &'static str {
+    match kind {
+        InboundOverrideKind::MixedIn => "mixedin",
+        InboundOverrideKind::Tun => "tun",
+    }
+}
+
 fn detail_value(ui: &mut egui::Ui, text: &str) {
     ui.label(egui::RichText::new(text).color(color::on_surface()));
 }
@@ -754,21 +955,43 @@ fn settings_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
             {
                 s_changed = true;
             }
-            ui.horizontal(|ui| {
-                ui.label(theme::setting_label("Auto update interval (hours)"));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add_sized(
-                            [56.0, 22.0],
-                            egui::DragValue::new(&mut app.settings.update_interval_hours)
-                                .range(1..=720),
-                        )
-                        .changed()
-                    {
-                        s_changed = true;
-                    }
+            if app.settings.auto_update {
+                ui.horizontal(|ui| {
+                    ui.label(theme::setting_label("Auto update interval (hours)"));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let interval_hint = DEFAULT_UPDATE_INTERVAL_HOURS.to_string();
+                        let resp = theme::setting_input_singleline_sized(
+                            ui,
+                            &mut app.update_interval_input,
+                            &interval_hint,
+                            SETTINGS_INPUT_SHORT,
+                        );
+                        if resp.changed() {
+                            let value = app.update_interval_input.trim();
+                            let parsed = if value.is_empty() {
+                                Some(DEFAULT_UPDATE_INTERVAL_HOURS)
+                            } else {
+                                value.parse::<u64>().ok().map(|hours| hours.clamp(1, 720))
+                            };
+                            if let Some(hours) = parsed {
+                                if app.settings.update_interval_hours != hours {
+                                    app.settings.update_interval_hours = hours;
+                                    s_changed = true;
+                                }
+                            }
+                        }
+                        if resp.lost_focus() {
+                            app.update_interval_input = if app.settings.update_interval_hours
+                                == DEFAULT_UPDATE_INTERVAL_HOURS
+                            {
+                                String::new()
+                            } else {
+                                app.settings.update_interval_hours.to_string()
+                            };
+                        }
+                    });
                 });
-            });
+            }
             if s_changed {
                 app.persist_settings();
             }
@@ -845,6 +1068,8 @@ fn settings_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
             {
                 app.persist_settings();
             }
+
+            inbound_override_settings(ui, app);
 
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -1047,7 +1272,7 @@ fn run_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
         const LOG_HEIGHT: f32 = 200.0;
         let log_inner_width = (ui.available_width() - LOG_INNER_MARGIN * 2.0).max(0.0);
 
-        egui::Frame::none()
+        let log_frame = egui::Frame::none()
             .fill(color::surface_container_lowest())
             .rounding(egui::Rounding::same(radius::MD))
             .inner_margin(egui::Margin::same(LOG_INNER_MARGIN))
@@ -1101,6 +1326,9 @@ fn run_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
                         }
                     });
             });
+        ui.ctx().data_mut(|data| {
+            data.insert_temp(log_scroll_blocking_rect_id(), log_frame.response.rect);
+        });
     });
 }
 

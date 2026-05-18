@@ -1,8 +1,72 @@
 use std::path::Path;
 
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Deserializer, Serialize};
 
 use crate::config::persist;
+
+pub const DEFAULT_MIXED_LISTEN: &str = "127.0.0.1";
+pub const DEFAULT_MIXED_LISTEN_PORT: u16 = 5353;
+pub const DEFAULT_TUN_ADDRESS: &str = "172.18.0.1/30";
+pub const DEFAULT_UPDATE_INTERVAL_HOURS: u64 = 24;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum InboundOverrideKind {
+    #[default]
+    MixedIn,
+    Tun,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InboundOverrideSettings {
+    pub enabled: bool,
+    pub kind: InboundOverrideKind,
+    pub mixed_listen: String,
+    #[serde(default, deserialize_with = "string_from_string_or_number")]
+    pub mixed_listen_port: String,
+    pub tun_mtu: String,
+    pub tun_endpoint_independent_nat: bool,
+}
+
+impl Default for InboundOverrideSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            kind: InboundOverrideKind::MixedIn,
+            mixed_listen: String::new(),
+            mixed_listen_port: String::new(),
+            tun_mtu: String::new(),
+            tun_endpoint_independent_nat: true,
+        }
+    }
+}
+
+impl InboundOverrideSettings {
+    fn normalize_empty_defaults(&mut self) {
+        if self.mixed_listen.trim() == DEFAULT_MIXED_LISTEN {
+            self.mixed_listen.clear();
+        }
+        if self.mixed_listen_port.trim() == DEFAULT_MIXED_LISTEN_PORT.to_string() {
+            self.mixed_listen_port.clear();
+        }
+    }
+}
+
+fn string_from_string_or_number<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Null => Ok(String::new()),
+        serde_json::Value::String(value) => Ok(value),
+        serde_json::Value::Number(value) => Ok(value.to_string()),
+        other => Err(de::Error::custom(format!(
+            "expected string or number for mixed_listen_port, got {other}"
+        ))),
+    }
+}
 
 /// Global app settings persisted as `settings.json` next to the exe.
 ///
@@ -37,6 +101,10 @@ pub struct Settings {
     /// User preference for the visual theme. Defaults to following the
     /// host OS (`ThemeMode::System`).
     pub theme_mode: crate::theme::ThemeMode,
+    /// Optional runtime-only sing-box inbound override. The original
+    /// selected config is never modified; the launcher writes a copied
+    /// runtime config under the sing-box working directory before start.
+    pub inbound_override: InboundOverrideSettings,
 }
 
 impl Default for Settings {
@@ -48,10 +116,11 @@ impl Default for Settings {
             auto_start_sing_box: false,
             always_admin: false,
             auto_update: false,
-            update_interval_hours: 24,
+            update_interval_hours: DEFAULT_UPDATE_INTERVAL_HOURS,
             close_to_tray: false,
             silent_start: false,
             theme_mode: crate::theme::ThemeMode::System,
+            inbound_override: InboundOverrideSettings::default(),
         }
     }
 }
@@ -63,8 +132,11 @@ impl Settings {
 
     pub fn load_with_warning(path: &Path) -> (Self, Option<String>) {
         match std::fs::read_to_string(path) {
-            Ok(raw) => match serde_json::from_str(&raw) {
-                Ok(settings) => (settings, None),
+            Ok(raw) => match serde_json::from_str::<Self>(&raw) {
+                Ok(mut settings) => {
+                    settings.inbound_override.normalize_empty_defaults();
+                    (settings, None)
+                }
                 Err(e) => (
                     Self::default(),
                     Some(format!(

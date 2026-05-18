@@ -5,11 +5,15 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use anyhow::Context;
 use chrono::NaiveDateTime;
 use eframe::egui;
 
 use crate::config::entry::{ConfigEntry, Source};
-use crate::config::settings::Settings;
+use crate::config::settings::{
+    InboundOverrideKind, InboundOverrideSettings, Settings, DEFAULT_MIXED_LISTEN,
+    DEFAULT_MIXED_LISTEN_PORT, DEFAULT_TUN_ADDRESS, DEFAULT_UPDATE_INTERVAL_HOURS,
+};
 use crate::config::updater::{self, NewConfigSpec};
 use crate::core::paths::Paths;
 use crate::core::process::ProcessHandle;
@@ -144,6 +148,10 @@ pub struct App {
     /// launching the Telerik installer. Drives the Settings button's
     /// disabled state to prevent stacked clicks.
     pub loopback_busy: bool,
+    /// Text-edit buffer for the compact update-interval field. The
+    /// persisted setting remains numeric; this only preserves in-progress
+    /// edits while the field has focus.
+    pub update_interval_input: String,
 
     pub add_dialog: AddDialogState,
     /// `Some(slug)` while the delete confirmation modal is open.
@@ -177,6 +185,12 @@ impl App {
         let (configs, config_load_errors) = paths.list_configs_with_errors();
         let cores = paths.list_cores();
         let pending_initial_silent_hide = settings.silent_start;
+        let update_interval_input =
+            if settings.update_interval_hours == DEFAULT_UPDATE_INTERVAL_HOURS {
+                String::new()
+            } else {
+                settings.update_interval_hours.to_string()
+            };
         let startup_warning = summarize_startup_warnings(settings_warning, &config_load_errors);
 
         let (bg_tx, bg_cmd_rx) = channel::<BgCmd>();
@@ -219,6 +233,7 @@ impl App {
             last_error: startup_warning,
             last_info: None,
             loopback_busy: false,
+            update_interval_input,
             add_dialog: AddDialogState::new(),
             delete_confirm: None,
             destroy_confirm_open: false,
@@ -356,9 +371,16 @@ impl App {
         };
         let core_exe = self.paths.core_path(&core_name);
         let cfg_path = entry.config_file();
+        let runtime_cfg = self.paths.runtime_config_file();
+        if let Err(e) =
+            prepare_runtime_config(&cfg_path, &runtime_cfg, &self.settings.inbound_override)
+        {
+            self.last_error = Some(e.to_string());
+            return;
+        }
         match self.proc.start(
             &core_exe,
-            &cfg_path,
+            &runtime_cfg,
             &self.paths.working_dir,
             self.log_tx.clone(),
         ) {
@@ -580,6 +602,121 @@ fn summarize_config_load_errors(errors: &[String]) -> Option<String> {
             many[0]
         )),
     }
+}
+
+fn prepare_runtime_config(
+    source: &std::path::Path,
+    runtime: &std::path::Path,
+    inbound_override: &InboundOverrideSettings,
+) -> anyhow::Result<()> {
+    if !inbound_override.enabled {
+        if let Some(parent) = runtime.parent() {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "failed to create runtime config directory {}",
+                    parent.display()
+                )
+            })?;
+        }
+        std::fs::copy(source, runtime).with_context(|| {
+            format!(
+                "failed to copy config {} to {}",
+                source.display(),
+                runtime.display()
+            )
+        })?;
+        return Ok(());
+    }
+
+    let raw = std::fs::read(source)
+        .with_context(|| format!("failed to read config {}", source.display()))?;
+    let mut config: serde_json::Value = serde_json::from_slice(&raw)
+        .with_context(|| format!("failed to parse config JSON {}", source.display()))?;
+    let Some(root) = config.as_object_mut() else {
+        anyhow::bail!("config root must be a JSON object: {}", source.display());
+    };
+
+    root.insert(
+        "inbounds".to_owned(),
+        serde_json::Value::Array(vec![build_override_inbound(inbound_override)?]),
+    );
+
+    let bytes = serde_json::to_vec_pretty(&config)
+        .with_context(|| format!("failed to serialize runtime config {}", runtime.display()))?;
+    if let Some(parent) = runtime.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create runtime config directory {}",
+                parent.display()
+            )
+        })?;
+    }
+    std::fs::write(runtime, bytes)
+        .with_context(|| format!("failed to write runtime config {}", runtime.display()))?;
+    Ok(())
+}
+
+fn build_override_inbound(settings: &InboundOverrideSettings) -> anyhow::Result<serde_json::Value> {
+    match settings.kind {
+        InboundOverrideKind::MixedIn => {
+            let listen = non_empty_or_default(&settings.mixed_listen, DEFAULT_MIXED_LISTEN);
+            let port = parse_optional_port(
+                &settings.mixed_listen_port,
+                DEFAULT_MIXED_LISTEN_PORT,
+                "mixed listen port",
+            )?;
+            Ok(serde_json::json!({
+                "type": "mixed",
+                "tag": "mixed-in",
+                "listen": listen,
+                "listen_port": port,
+            }))
+        }
+        InboundOverrideKind::Tun => {
+            let mut inbound = serde_json::json!({
+                "type": "tun",
+                "tag": "tun-in",
+                "address": DEFAULT_TUN_ADDRESS,
+                "auto_route": true,
+                "strict_route": true,
+                "stack": "system",
+                "endpoint_independent_nat": settings.tun_endpoint_independent_nat,
+            });
+            let mtu = settings.tun_mtu.trim();
+            if !mtu.is_empty() {
+                let mtu: u64 = mtu
+                    .parse()
+                    .with_context(|| format!("invalid TUN MTU value: {mtu}"))?;
+                inbound["mtu"] = serde_json::Value::Number(mtu.into());
+            }
+            Ok(inbound)
+        }
+    }
+}
+
+fn non_empty_or_default<'a>(value: &'a str, default: &'static str) -> &'a str {
+    let value = value.trim();
+    if value.is_empty() {
+        default
+    } else {
+        value
+    }
+}
+
+fn parse_optional_port(value: &str, default: u16, label: &str) -> anyhow::Result<u16> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(default);
+    }
+    value
+        .parse::<u16>()
+        .with_context(|| format!("invalid {label}: {value}"))
+        .and_then(|port| {
+            if port == 0 {
+                anyhow::bail!("invalid {label}: {value}");
+            }
+            Ok(port)
+        })
 }
 
 #[cfg(windows)]

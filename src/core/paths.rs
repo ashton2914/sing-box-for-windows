@@ -68,6 +68,10 @@ impl Paths {
         self.core_dir.join(name)
     }
 
+    pub fn runtime_config_file(&self) -> PathBuf {
+        self.working_dir.join("config.json")
+    }
+
     /// All sub-folders of `config/` that contain a `metadata.json`, returned
     /// sorted by display name, plus any metadata/load errors that would
     /// otherwise make config folders disappear silently from the UI.

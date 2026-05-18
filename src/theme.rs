@@ -319,7 +319,7 @@ pub fn apply(ctx: &egui::Context) {
     v.override_text_color = Some(p.on_surface);
     v.window_fill = p.surface;
     v.panel_fill = p.surface;
-    v.extreme_bg_color = p.surface_container_lowest;
+    v.extreme_bg_color = p.surface_container_low;
     v.faint_bg_color = p.surface_container_low;
     v.code_bg_color = p.surface_container;
 
@@ -1450,6 +1450,22 @@ pub fn input_singleline(ui: &mut egui::Ui, text: &mut String, hint: &str) -> egu
 /// Same as [`input_singleline`] but with an explicit `size` — use when the
 /// input shares a row with another widget (e.g. a Browse… button).
 pub fn input_singleline_sized(
+    ui: &mut egui::Ui,
+    text: &mut String,
+    hint: &str,
+    size: impl Into<Vec2>,
+) -> egui::Response {
+    let resp = ui.add_sized(
+        size,
+        egui::TextEdit::singleline(text)
+            .hint_text(hint_text(hint))
+            .margin(INPUT_MARGIN),
+    );
+    keep_focus_on_ime_enter(ui.ctx(), &resp);
+    resp
+}
+
+pub fn setting_input_singleline_sized(
     ui: &mut egui::Ui,
     text: &mut String,
     hint: &str,
