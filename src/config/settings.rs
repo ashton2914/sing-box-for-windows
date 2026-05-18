@@ -30,6 +30,21 @@ pub enum LogLevel {
     Panic,
 }
 
+impl LogLevel {
+    /// sing-box log level name, also used as the UI label.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LogLevel::Trace => "trace",
+            LogLevel::Debug => "debug",
+            LogLevel::Info => "info",
+            LogLevel::Warn => "warn",
+            LogLevel::Error => "error",
+            LogLevel::Fatal => "fatal",
+            LogLevel::Panic => "panic",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LogOverrideSettings {

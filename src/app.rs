@@ -11,7 +11,7 @@ use eframe::egui;
 
 use crate::config::entry::{ConfigEntry, Source};
 use crate::config::settings::{
-    InboundOverrideKind, InboundOverrideSettings, LogLevel, LogOverrideSettings, Settings,
+    InboundOverrideKind, InboundOverrideSettings, LogOverrideSettings, Settings,
     DEFAULT_MIXED_LISTEN, DEFAULT_MIXED_LISTEN_PORT, DEFAULT_TUN_ADDRESS,
     DEFAULT_UPDATE_INTERVAL_HOURS,
 };
@@ -149,6 +149,11 @@ pub struct App {
     pub last_error: Option<String>,
     pub last_info: Option<String>,
 
+    /// Cached parsed JSON of the currently-selected config, refreshed
+    /// only when the selection slug or file mtime changes. Avoids a
+    /// per-frame disk read + JSON parse for the log status toolbar.
+    selected_config_cache: SelectedConfigCache,
+
     /// True while the loopback-utility worker is downloading or
     /// launching the Telerik installer. Drives the Settings button's
     /// disabled state to prevent stacked clicks.
@@ -238,6 +243,7 @@ impl App {
             log_view_snapshot: None,
             last_error: startup_warning,
             last_info: None,
+            selected_config_cache: SelectedConfigCache::default(),
             loopback_busy: false,
             update_interval_input,
             add_dialog: AddDialogState::new(),
@@ -364,6 +370,19 @@ impl App {
     pub fn selected_entry(&self) -> Option<&ConfigEntry> {
         let sel = self.settings.selected_config.as_deref()?;
         self.configs.iter().find(|c| c.slug == sel)
+    }
+
+    /// Return the parsed JSON of the currently-selected config, reading
+    /// from disk only when the selection or the file's mtime changes.
+    /// Returns `None` if no config is selected or the file is missing or
+    /// not valid JSON.
+    pub fn selected_config_value(&mut self) -> Option<&serde_json::Value> {
+        let entry = self.selected_entry()?;
+        let slug = entry.slug.clone();
+        let path = entry.config_file();
+        let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        self.selected_config_cache
+            .get_or_refresh(slug, &path, mtime)
     }
 
     pub fn try_start(&mut self) {
@@ -703,6 +722,36 @@ fn build_override_inbound(settings: &InboundOverrideSettings) -> anyhow::Result<
     }
 }
 
+#[derive(Default)]
+struct SelectedConfigCache {
+    slug: Option<String>,
+    mtime: Option<std::time::SystemTime>,
+    value: Option<serde_json::Value>,
+}
+
+impl SelectedConfigCache {
+    /// Return the parsed JSON for `slug` at `path`, refreshing the
+    /// cached value when either the slug or `mtime` differs from the
+    /// last call. `mtime` is what `App` already read via `metadata` to
+    /// avoid a second stat syscall here.
+    fn get_or_refresh(
+        &mut self,
+        slug: String,
+        path: &std::path::Path,
+        mtime: Option<std::time::SystemTime>,
+    ) -> Option<&serde_json::Value> {
+        let same = self.slug.as_deref() == Some(slug.as_str()) && self.mtime == mtime;
+        if !same {
+            self.slug = Some(slug);
+            self.mtime = mtime;
+            self.value = std::fs::read_to_string(path)
+                .ok()
+                .and_then(|raw| serde_json::from_str(&raw).ok());
+        }
+        self.value.as_ref()
+    }
+}
+
 fn build_override_log(settings: &LogOverrideSettings) -> serde_json::Value {
     let mut log = serde_json::Map::new();
     log.insert(
@@ -711,7 +760,7 @@ fn build_override_log(settings: &LogOverrideSettings) -> serde_json::Value {
     );
     log.insert(
         "level".to_owned(),
-        serde_json::Value::String(log_level_label(settings.level).to_owned()),
+        serde_json::Value::String(settings.level.as_str().to_owned()),
     );
     if settings.save_logs {
         log.insert(
@@ -721,18 +770,6 @@ fn build_override_log(settings: &LogOverrideSettings) -> serde_json::Value {
     }
     log.insert("timestamp".to_owned(), serde_json::Value::Bool(true));
     serde_json::Value::Object(log)
-}
-
-fn log_level_label(level: LogLevel) -> &'static str {
-    match level {
-        LogLevel::Trace => "trace",
-        LogLevel::Debug => "debug",
-        LogLevel::Info => "info",
-        LogLevel::Warn => "warn",
-        LogLevel::Error => "error",
-        LogLevel::Fatal => "fatal",
-        LogLevel::Panic => "panic",
-    }
 }
 
 fn non_empty_or_default<'a>(value: &'a str, default: &'static str) -> &'a str {

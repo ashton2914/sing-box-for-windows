@@ -835,7 +835,7 @@ fn log_level_combo(ui: &mut egui::Ui, value: &mut LogLevel, width: f32) -> Optio
         width,
         28.0,
         |ui, painter, inner, _content_right| {
-            let text = log_level_label(current);
+            let text = current.as_str();
             let galley = ui.fonts(|f| {
                 f.layout_no_wrap(
                     text.to_owned(),
@@ -861,7 +861,7 @@ fn log_level_combo(ui: &mut egui::Ui, value: &mut LogLevel, width: f32) -> Optio
             ] {
                 let selected = current == option;
                 let clicked = popup_combo_row(ui, 28.0, selected, |ui, painter, inner| {
-                    let text = log_level_label(option);
+                    let text = option.as_str();
                     let galley = ui.fonts(|f| {
                         f.layout_no_wrap(
                             text.to_owned(),
@@ -889,18 +889,6 @@ fn log_level_combo(ui: &mut egui::Ui, value: &mut LogLevel, width: f32) -> Optio
         }
     }
     None
-}
-
-fn log_level_label(level: LogLevel) -> &'static str {
-    match level {
-        LogLevel::Trace => "trace",
-        LogLevel::Debug => "debug",
-        LogLevel::Info => "info",
-        LogLevel::Warn => "warn",
-        LogLevel::Error => "error",
-        LogLevel::Fatal => "fatal",
-        LogLevel::Panic => "panic",
-    }
 }
 
 fn detail_value(ui: &mut egui::Ui, text: &str) {
@@ -1426,19 +1414,22 @@ fn run_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
 
                 // The log view has dense monospace text. Keep the scrollbar
                 // permanently visible (no auto-hide) and reserve a gutter so
-                // it never overlaps text.
+                // it never overlaps text. Also force background-color mode:
+                // the default floating style uses foreground text color for
+                // handles, which stays bright even after `floating = false`.
+                {
+                    let visuals = &mut ui.visuals_mut().widgets;
+                    visuals.inactive.bg_fill = theme::with_alpha(color::outline_variant(), 0.55);
+                    visuals.hovered.bg_fill = theme::with_alpha(color::outline_variant(), 0.85);
+                    visuals.active.bg_fill = color::outline_variant();
+                }
                 {
                     let scroll = &mut ui.spacing_mut().scroll;
                     scroll.floating = false;
+                    scroll.foreground_color = false;
                     scroll.bar_width = 8.0;
                     scroll.bar_inner_margin = 2.0;
                     scroll.bar_outer_margin = 0.0;
-                    scroll.dormant_background_opacity = 0.0;
-                    scroll.dormant_handle_opacity = 0.55;
-                    scroll.active_background_opacity = 0.0;
-                    scroll.active_handle_opacity = 0.75;
-                    scroll.interact_background_opacity = 0.0;
-                    scroll.interact_handle_opacity = 0.9;
                 }
 
                 ui.allocate_ui_with_layout(
@@ -1515,8 +1506,26 @@ fn log_status_toolbar(ui: &mut egui::Ui, app: &mut App) {
         .running_for()
         .map(format_duration)
         .unwrap_or_else(|| "stopped".to_owned());
-    let log_level = current_log_level(app);
-    let clash_webui = current_clash_webui(app);
+
+    // Snapshot the log-override fields before reading the cached config
+    // so the immutable copy here doesn't conflict with the `&mut app`
+    // borrow that `selected_config_value` needs.
+    let lo_enabled = app.settings.log_override.enabled;
+    let lo_disabled = app.settings.log_override.disabled;
+    let lo_level = app.settings.log_override.level;
+    let cfg = app.selected_config_value();
+    let log_level = if lo_enabled {
+        if lo_disabled {
+            "disabled".to_owned()
+        } else {
+            lo_level.as_str().to_owned()
+        }
+    } else {
+        cfg.and_then(extract_log_level_from_config)
+            .unwrap_or_else(|| "info".to_owned())
+    };
+    let webui_url = cfg.and_then(extract_clash_webui_url);
+
     let text = format!("Level {log_level}    Time {now}    Uptime {uptime}");
 
     ui.add(
@@ -1529,7 +1538,7 @@ fn log_status_toolbar(ui: &mut egui::Ui, app: &mut App) {
         .selectable(false),
     )
     .on_hover_cursor(egui::CursorIcon::Default);
-    if let Some(webui) = clash_webui.as_ref() {
+    if let Some(url) = webui_url.as_deref() {
         ui.add_space(10.0);
         if ui
             .add(
@@ -1544,10 +1553,10 @@ fn log_status_toolbar(ui: &mut egui::Ui, app: &mut App) {
                 .sense(egui::Sense::click()),
             )
             .on_hover_cursor(egui::CursorIcon::Default)
-            .on_hover_text(format!("Open WebUI: {}", webui.url))
+            .on_hover_text(format!("Open WebUI: {url}"))
             .clicked()
         {
-            if let Err(e) = shell::open_url(&webui.url) {
+            if let Err(e) = shell::open_url(url) {
                 app.last_error = Some(format!("Open WebUI failed: {e}"));
             }
         }
@@ -1587,10 +1596,6 @@ fn log_status_toolbar(ui: &mut egui::Ui, app: &mut App) {
     });
 }
 
-struct ClashWebUiInfo {
-    url: String,
-}
-
 fn log_toolbar_button(text: &'static str) -> egui::Button<'static> {
     egui::Button::new(egui::RichText::new(text).color(color::primary()).size(12.0))
         .fill(egui::Color32::TRANSPARENT)
@@ -1599,48 +1604,25 @@ fn log_toolbar_button(text: &'static str) -> egui::Button<'static> {
         .stroke(egui::Stroke::NONE)
 }
 
-fn current_log_level(app: &App) -> String {
-    if app.settings.log_override.enabled {
-        return if app.settings.log_override.disabled {
-            "disabled".to_owned()
-        } else {
-            log_level_label(app.settings.log_override.level).to_owned()
-        };
+fn extract_log_level_from_config(config: &serde_json::Value) -> Option<String> {
+    let log = config.get("log")?;
+    if log
+        .get("disabled")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Some("disabled".to_owned());
     }
-
-    read_selected_config_json(app)
-        .and_then(|config| {
-            let log = config.get("log")?;
-            if log
-                .get("disabled")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false)
-            {
-                Some("disabled".to_owned())
-            } else {
-                log.get("level")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_owned)
-            }
-        })
-        .unwrap_or_else(|| "info".to_owned())
+    log.get("level")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
 }
 
-fn current_clash_webui(app: &App) -> Option<ClashWebUiInfo> {
-    let config = read_selected_config_json(app)?;
+fn extract_clash_webui_url(config: &serde_json::Value) -> Option<String> {
     let clash_api = config.get("experimental")?.get("clash_api")?;
     let controller = non_empty_json_str(clash_api.get("external_controller")?)?;
     non_empty_json_str(clash_api.get("external_ui")?)?;
-
-    Some(ClashWebUiInfo {
-        url: clash_webui_url(controller),
-    })
-}
-
-fn read_selected_config_json(app: &App) -> Option<serde_json::Value> {
-    let entry = app.selected_entry()?;
-    let raw = std::fs::read_to_string(entry.config_file()).ok()?;
-    serde_json::from_str(&raw).ok()
+    Some(clash_webui_url(controller))
 }
 
 fn non_empty_json_str(value: &serde_json::Value) -> Option<&str> {
