@@ -106,18 +106,11 @@ pub fn titlebar(ctx: &Context, main_hwnd: Option<usize>) {
                     title_color,
                 )
             });
-            let title_y = rect.center().y - title_galley.size().y * 0.5 - 0.5;
-            let title_left = rect.left() + 18.0;
-            painter.galley(
-                egui::pos2(title_left, title_y),
-                title_galley.clone(),
-                title_color,
-            );
-            painter.galley(
-                egui::pos2(title_left + 0.45, title_y),
-                title_galley,
-                title_color,
-            );
+            let pixels_per_point = ctx.pixels_per_point();
+            let snap = |value: f32| (value * pixels_per_point).round() / pixels_per_point;
+            let title_y = snap(rect.center().y - title_galley.size().y * 0.5);
+            let title_left = snap(rect.left() + 18.0);
+            painter.galley(egui::pos2(title_left, title_y), title_galley, title_color);
 
             // ----- Window buttons (right, fixed strip) -----
             let strip_rect = Rect::from_min_max(

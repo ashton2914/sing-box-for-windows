@@ -88,10 +88,12 @@ fn main() -> eframe::Result<()> {
             setup_fonts(&cc.egui_ctx);
             // Initial palette: derive from saved theme_mode so the first
             // painted frame already matches the user's preference.
-            // System mode falls back to dark here (we have no system
-            // signal until the first `App::update`); App::update
-            // reconciles on frame 1 if the OS reports otherwise.
-            let initial_dark = startup_settings.theme_mode.resolve(true);
+            let system_is_dark = match cc.integration_info.system_theme {
+                Some(eframe::Theme::Dark) => true,
+                Some(eframe::Theme::Light) => false,
+                None => true,
+            };
+            let initial_dark = startup_settings.theme_mode.resolve(system_is_dark);
             theme::set_dark(initial_dark);
             theme::apply(&cc.egui_ctx);
             let app = app::App::new(cc.egui_ctx.clone());
@@ -101,7 +103,7 @@ fn main() -> eframe::Result<()> {
 }
 
 /// Load nicer system fonts so the UI feels closer to Material 3 typography.
-/// Order: Segoe UI Variable (Win11) → Segoe UI (Win7+) → fallback to default.
+/// Order: Segoe UI (static) → Segoe UI Variable (Win11) → fallback to default.
 /// Adds Microsoft YaHei as a CJK fallback so non-ASCII paths still render.
 fn setup_fonts(ctx: &egui::Context) {
     use egui::{FontData, FontDefinitions, FontFamily};
@@ -109,8 +111,8 @@ fn setup_fonts(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
 
     let primary = [
-        r"C:\Windows\Fonts\SegoeUIVF.ttf",
         r"C:\Windows\Fonts\segoeui.ttf",
+        r"C:\Windows\Fonts\SegoeUIVF.ttf",
     ];
     for (i, path) in primary.iter().enumerate() {
         if let Ok(data) = std::fs::read(path) {
