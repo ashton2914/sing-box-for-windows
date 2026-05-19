@@ -13,3 +13,6 @@
 # Atomic-write leftovers anywhere in the tree.
 *.tmp
 *.bak
+
+# Build-event JSON dumps from cargo check --message-format=json.
+/check_results.json
