@@ -16,7 +16,7 @@ This project provides the launcher only. It does not bundle or redistribute the 
 
 ## Quick Start
 
-1. Download `sing-box-for-windows-v<version>-windows-x86_64.exe` from a release.
+1. Download from release.
 2. Place it in any writable folder.
 3. Run the executable once. The app creates the required runtime folders automatically.
 4. Put your `sing-box` Windows core executable into `core/`.
