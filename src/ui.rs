@@ -1537,6 +1537,10 @@ fn log_status_toolbar(ui: &mut egui::Ui, app: &mut App) {
     // cores or replaced the binary on disk. Cheap when the cache is
     // valid; spawns the core process once otherwise.
     app.ensure_core_version();
+    // Probe the monospace font's design row once per frame; every
+    // chip/label below shares these metrics so they all sit on a
+    // single visual baseline.
+    let chips = LogInlineChips::new(ui);
     let uptime = app
         .proc
         .running_for()
@@ -1573,7 +1577,11 @@ fn log_status_toolbar(ui: &mut egui::Ui, app: &mut App) {
         .unwrap_or_else(|| "?".to_owned());
     let core_has_full = app.core_version.full.is_some();
     let core_label = format!("Core: {core_short}");
-    if log_inline_hidden_button(ui, &core_label).clicked() && core_has_full {
+    if chips
+        .button(ui, &core_label, color::on_surface_variant())
+        .clicked()
+        && core_has_full
+    {
         app.core_version_modal_state.reset();
         app.core_version_open = true;
     }
@@ -1587,19 +1595,19 @@ fn log_status_toolbar(ui: &mut egui::Ui, app: &mut App) {
     // the log subsystem state (which includes the literal "disabled")
     // and "Level" misleadingly implied a strict severity threshold.
     //
-    // Rendered via `log_inline_text` (rather than `egui::Label`) so it
+    // Rendered via `chips.text` (rather than `egui::Label`) so it
     // shares the same baseline math as the hidden-button chips on either
     // side. Otherwise strings without descenders ("WebUI", "Clear",
     // "Pause") would visibly sit at a different height than this label.
     let text = format!("Log: {log_level}    Uptime: {uptime}");
-    log_inline_text(ui, &text, color::on_surface_variant());
+    chips.text(ui, &text, color::on_surface_variant());
 
     if let Some(url) = webui_url.as_deref() {
         ui.add_space(8.0);
         // WebUI affordance uses the same muted color as surrounding
         // status text so it does not visually compete with the other
         // chips — only the hover background reveals it is clickable.
-        if log_inline_hidden_button(ui, "WebUI").clicked() {
+        if chips.button(ui, "WebUI", color::on_surface_variant()).clicked() {
             if let Err(e) = shell::open_url(url) {
                 app.last_error = Some(format!("Open WebUI failed: {e}"));
             }
@@ -1614,55 +1622,18 @@ fn log_status_toolbar(ui: &mut egui::Ui, app: &mut App) {
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         let paused = app.log_view_snapshot.is_some();
         let label = if paused { "Resume" } else { "Pause" };
-        if log_inline_hidden_button_colored(ui, label, color::primary()).clicked() {
+        if chips.button(ui, label, color::primary()).clicked() {
             if paused {
                 app.log_view_snapshot = None;
             } else {
                 app.log_view_snapshot = Some(app.logs.iter().cloned().collect());
             }
         }
-        if log_inline_hidden_button_colored(ui, "Clear", color::primary()).clicked() {
+        if chips.button(ui, "Clear", color::primary()).clicked() {
             app.logs.clear();
             app.log_view_snapshot = None;
         }
     });
-}
-
-/// Render a button that looks like the surrounding monospace status
-/// text until the pointer hovers over it. On hover/active, a subtle
-/// surface tint paints behind the label so the affordance becomes
-/// visible without crowding the toolbar with chrome.
-///
-/// Uses the muted `on_surface_variant` color to match other status
-/// text; use [`log_inline_hidden_button_colored`] when the label needs
-/// a different tint (e.g. primary for the WebUI link).
-fn log_inline_hidden_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
-    log_inline_hidden_button_colored(ui, text, color::on_surface_variant())
-}
-
-/// Paint a non-interactive monospace label using the exact same vertical
-/// positioning math as the hidden-button chips. This is what guarantees
-/// the plain status text ("Log: warn    Uptime: stopped") sits on the
-/// same baseline as the adjacent chips, even when the chips contain
-/// strings without descenders.
-fn log_inline_text(ui: &mut egui::Ui, text: &str, color: egui::Color32) -> egui::Response {
-    log_inline_paint(ui, text, color, false)
-}
-
-/// Variant of [`log_inline_hidden_button`] with an explicit label color
-/// so different chips can share the same hidden-chrome behaviour while
-/// using palette-appropriate text colors.
-///
-/// Painted by hand so that every chip's hover background hugs the
-/// font's typographic design row (cap-top to descender-bottom) rather
-/// than the per-string ink, and so every label — chip or not — sits on
-/// the same baseline.
-fn log_inline_hidden_button_colored(
-    ui: &mut egui::Ui,
-    text: &str,
-    label_color: egui::Color32,
-) -> egui::Response {
-    log_inline_paint(ui, text, label_color, true)
 }
 
 /// Horizontal/vertical padding around the typographic design row when
@@ -1672,88 +1643,124 @@ fn log_inline_hidden_button_colored(
 /// than `egui::Button` would.
 const LOG_INLINE_PAD: egui::Vec2 = egui::vec2(6.0, 4.0);
 
-/// Probe the active monospace font for its *typographic design row*
-/// extent — the y-range from cap-top to descender-bottom — by laying
-/// out a reference string that contains both an ascender ("A") and a
-/// descender ("g"). Returns `(design_height, cap_top_offset)` where the
-/// offset is measured from the galley's layout origin.
+/// Renders the monospace status text and hidden-button chips that make
+/// up the log toolbar. Constructed once per toolbar frame so the font's
+/// typographic design row — probed once by laying out a reference
+/// string containing both an ascender ("A") and a descender ("g") — is
+/// shared by every label.
 ///
-/// Using these reference metrics (rather than the actual string's
+/// Using these reference metrics (rather than each string's
 /// `mesh_bounds`) is what keeps adjacent labels on the same baseline
 /// regardless of which glyphs they happen to contain. Per-string
 /// `mesh_bounds` would shift the cap-top up for strings like "WebUI"
 /// (no descender), breaking baseline alignment with the rest of the
 /// toolbar.
-fn log_font_design_metrics(ui: &egui::Ui, font_id: &egui::FontId) -> (f32, f32) {
-    let reference = ui.fonts(|f| {
-        f.layout_no_wrap("Ag".to_owned(), font_id.clone(), egui::Color32::WHITE)
-    });
-    (reference.mesh_bounds.height(), reference.mesh_bounds.min.y)
+struct LogInlineChips {
+    font_id: egui::FontId,
+    /// Cap-top to descender-bottom extent of the reference glyphs, in
+    /// galley units. Used as every chip's content height so the chip
+    /// background hugs the design row, not the per-string ink.
+    design_height: f32,
+    /// Y offset of the cap-top inside the reference galley's layout
+    /// box. Used to anchor each label's cap-top at a fixed position
+    /// inside its chip, which is what produces the unified baseline.
+    cap_top_in_galley: f32,
 }
 
-/// Internal renderer shared by [`log_inline_text`] and the hidden-button
-/// chips. Allocates a row-height slot, optionally paints a hover
-/// background, and draws the text so its cap-top sits at a font-derived
-/// position that is identical across every call — the property that
-/// gives the toolbar a single visual baseline.
-fn log_inline_paint(
-    ui: &mut egui::Ui,
-    text: &str,
-    color: egui::Color32,
-    interactive: bool,
-) -> egui::Response {
-    let font_id = egui::FontId::monospace(12.0);
-    let galley = ui.fonts(|f| f.layout_no_wrap(text.to_owned(), font_id.clone(), color));
-    let (design_height, cap_top_in_galley) = log_font_design_metrics(ui, &font_id);
-
-    // Chip frames the *design row* (consistent across all strings) plus
-    // symmetric padding, so every chip has the same height and the
-    // hover background lines up with neighbouring chips even when the
-    // string has no descender ink to fill the bottom of the row.
-    let chip_size = egui::vec2(
-        galley.size().x + LOG_INLINE_PAD.x * 2.0,
-        design_height + LOG_INLINE_PAD.y * 2.0,
-    );
-    let row_height = ui.available_height().max(chip_size.y);
-    let sense = if interactive {
-        egui::Sense::click()
-    } else {
-        egui::Sense::hover()
-    };
-    let (slot_rect, response) = ui.allocate_exact_size(
-        egui::vec2(chip_size.x, row_height),
-        sense,
-    );
-    let chip_rect = egui::Rect::from_center_size(slot_rect.center(), chip_size);
-
-    if interactive {
-        let bg = if response.is_pointer_button_down_on() {
-            theme::with_alpha(color::on_surface(), 0.16)
-        } else if response.hovered() {
-            theme::with_alpha(color::on_surface(), 0.10)
-        } else {
-            egui::Color32::TRANSPARENT
-        };
-        if bg.a() > 0 {
-            ui.painter()
-                .rect_filled(chip_rect, egui::Rounding::same(radius::SM), bg);
+impl LogInlineChips {
+    fn new(ui: &egui::Ui) -> Self {
+        let font_id = egui::FontId::monospace(12.0);
+        let reference = ui.fonts(|f| {
+            f.layout_no_wrap("Ag".to_owned(), font_id.clone(), egui::Color32::WHITE)
+        });
+        Self {
+            font_id,
+            design_height: reference.mesh_bounds.height(),
+            cap_top_in_galley: reference.mesh_bounds.min.y,
         }
     }
 
-    // Anchor the font's cap-top (not the galley's layout-box top) to a
-    // fixed offset inside the chip. The galley draws relative to its
-    // own layout origin, so we shift by `-cap_top_in_galley` to put the
-    // actual cap-tops at `chip_rect.top() + LOG_INLINE_PAD.y`. Every
-    // call — chip or plain text — uses the same target y, which is what
-    // produces the unified baseline.
-    let target_cap_top = chip_rect.top() + LOG_INLINE_PAD.y;
-    let text_pos = egui::pos2(
-        chip_rect.left() + LOG_INLINE_PAD.x,
-        target_cap_top - cap_top_in_galley,
-    );
-    ui.painter().galley(text_pos, galley, color);
+    /// Paint a non-interactive monospace label using the exact same
+    /// vertical positioning math as the hidden-button chips. This is
+    /// what guarantees the plain status text ("Log: warn    Uptime:
+    /// stopped") sits on the same baseline as the adjacent chips, even
+    /// when the chips contain strings without descenders.
+    fn text(&self, ui: &mut egui::Ui, text: &str, color: egui::Color32) {
+        self.paint(ui, text, color, false);
+    }
 
-    response
+    /// Render a button that looks like the surrounding monospace status
+    /// text until the pointer hovers over it. On hover/active, a subtle
+    /// surface tint paints behind the label so the affordance becomes
+    /// visible without crowding the toolbar with chrome.
+    ///
+    /// Painted by hand so every chip's hover background hugs the
+    /// font's typographic design row (cap-top to descender-bottom)
+    /// rather than the per-string ink, and so every label — chip or
+    /// not — sits on the same baseline.
+    fn button(&self, ui: &mut egui::Ui, text: &str, color: egui::Color32) -> egui::Response {
+        self.paint(ui, text, color, true)
+    }
+
+    fn paint(
+        &self,
+        ui: &mut egui::Ui,
+        text: &str,
+        color: egui::Color32,
+        interactive: bool,
+    ) -> egui::Response {
+        let galley =
+            ui.fonts(|f| f.layout_no_wrap(text.to_owned(), self.font_id.clone(), color));
+
+        // Chip frames the *design row* (consistent across all strings)
+        // plus symmetric padding, so every chip has the same height and
+        // the hover background lines up with neighbouring chips even
+        // when the string has no descender ink to fill the bottom of
+        // the row.
+        let chip_size = egui::vec2(
+            galley.size().x + LOG_INLINE_PAD.x * 2.0,
+            self.design_height + LOG_INLINE_PAD.y * 2.0,
+        );
+        let row_height = ui.available_height().max(chip_size.y);
+        let sense = if interactive {
+            egui::Sense::click()
+        } else {
+            egui::Sense::hover()
+        };
+        let (slot_rect, response) =
+            ui.allocate_exact_size(egui::vec2(chip_size.x, row_height), sense);
+        let chip_rect = egui::Rect::from_center_size(slot_rect.center(), chip_size);
+
+        if interactive {
+            let bg = if response.is_pointer_button_down_on() {
+                theme::with_alpha(color::on_surface(), 0.16)
+            } else if response.hovered() {
+                theme::with_alpha(color::on_surface(), 0.10)
+            } else {
+                egui::Color32::TRANSPARENT
+            };
+            if bg.a() > 0 {
+                ui.painter()
+                    .rect_filled(chip_rect, egui::Rounding::same(radius::SM), bg);
+            }
+        }
+
+        // Anchor the font's cap-top (not the galley's layout-box top)
+        // to a fixed offset inside the chip. The galley draws relative
+        // to its own layout origin, so we shift by `-cap_top_in_galley`
+        // to put the actual cap-tops at
+        // `chip_rect.top() + LOG_INLINE_PAD.y`. Every call — chip or
+        // plain text — uses the same target y, which is what produces
+        // the unified baseline.
+        let target_cap_top = chip_rect.top() + LOG_INLINE_PAD.y;
+        let text_pos = egui::pos2(
+            chip_rect.left() + LOG_INLINE_PAD.x,
+            target_cap_top - self.cap_top_in_galley,
+        );
+        ui.painter().galley(text_pos, galley, color);
+
+        response
+    }
 }
 
 fn extract_log_level_from_config(config: &serde_json::Value) -> Option<String> {
