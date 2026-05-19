@@ -19,6 +19,67 @@ function Assert-NativeCommandSucceeded {
     }
 }
 
+function Get-VsWherePath {
+    $candidates = @(
+        (Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"),
+        (Join-Path $env:ProgramFiles "Microsoft Visual Studio\Installer\vswhere.exe")
+    )
+    foreach ($p in $candidates) {
+        if ($p -and (Test-Path -LiteralPath $p)) {
+            return $p
+        }
+    }
+    return $null
+}
+
+function Get-VsInstallPathWithComponent {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ComponentId
+    )
+
+    $vswhere = Get-VsWherePath
+    if (-not $vswhere) {
+        return $null
+    }
+
+    $install = & $vswhere -latest -products * -requires $ComponentId -property installationPath 2>$null
+    if ([string]::IsNullOrWhiteSpace($install)) {
+        return $null
+    }
+    return ($install | Select-Object -First 1).Trim()
+}
+
+function Ensure-ClangOnPath {
+    # If clang is already on PATH, nothing to do.
+    if (Get-Command clang.exe -ErrorAction SilentlyContinue) {
+        return $true
+    }
+
+    # Try to find the LLVM/Clang component bundled with Visual Studio and
+    # add its bin directory to PATH for the rest of this build session.
+    $vsInstall = Get-VsInstallPathWithComponent -ComponentId "Microsoft.VisualStudio.Component.VC.Llvm.Clang"
+    if ($vsInstall) {
+        $llvmBin = Join-Path $vsInstall "VC\Tools\Llvm\bin"
+        $clangExe = Join-Path $llvmBin "clang.exe"
+        if (Test-Path -LiteralPath $clangExe) {
+            $env:PATH = "$llvmBin;$env:PATH"
+            Write-Host "Using clang from Visual Studio: $clangExe"
+            return $true
+        }
+    }
+
+    # Fallback: a standalone LLVM install in the usual location.
+    $standaloneLlvm = Join-Path $env:ProgramFiles "LLVM\bin\clang.exe"
+    if (Test-Path -LiteralPath $standaloneLlvm) {
+        $env:PATH = (Split-Path -Parent $standaloneLlvm) + ";$env:PATH"
+        Write-Host "Using clang from standalone LLVM: $standaloneLlvm"
+        return $true
+    }
+
+    return $false
+}
+
 function Assert-TargetPrerequisites {
     param(
         [Parameter(Mandatory = $true)]
@@ -29,21 +90,52 @@ function Assert-TargetPrerequisites {
         return
     }
 
-    $HasCl = Get-Command cl.exe -ErrorAction SilentlyContinue
-    $HasClang = Get-Command clang.exe -ErrorAction SilentlyContinue
-    if (-not $HasCl -and -not $HasClang) {
-        throw @"
-ARM64 build requires a C compiler for native crates such as ring.
+    # `ring` (and a few other native crates) require clang to assemble ARM64
+    # sources on Windows — cl.exe is not sufficient even with the ARM64 MSVC
+    # tools installed. Linking and libc still come from MSVC.
 
-Open "Developer PowerShell for VS 2022" or "x64 Native Tools Command Prompt for VS 2022" with these Visual Studio Build Tools components installed:
+    $haveClang = Ensure-ClangOnPath
+    $haveArm64Msvc = $null -ne (Get-VsInstallPathWithComponent -ComponentId "Microsoft.VisualStudio.Component.VC.Tools.ARM64")
+    $haveAnyVs = $null -ne (Get-VsWherePath)
+
+    if ($haveClang -and $haveArm64Msvc) {
+        return
+    }
+
+    if (-not $haveAnyVs) {
+        throw @"
+ARM64 build requires both clang (to compile ring's ARM64 assembly) and the
+MSVC ARM64 toolchain (for linking and the C runtime), but no Visual Studio
+installation was detected.
+
+Install Visual Studio Build Tools 2022 with these components:
   - Desktop development with C++
   - Windows SDK
-  - MSVC x64/x86 build tools
-  - MSVC ARM64/ARM64EC build tools
+  - MSVC v143 - VS 2022 C++ x64/x86 build tools
+  - MSVC v143 - VS 2022 C++ ARM64/ARM64EC build tools
+  - C++ Clang Compiler for Windows  (or install LLVM separately)
 
-Alternatively install LLVM and make sure clang.exe is available on PATH.
+Alternatively install LLVM standalone and add clang.exe to PATH.
 "@
     }
+
+    $missing = @()
+    if (-not $haveArm64Msvc) {
+        $missing += "  - MSVC v143 - VS 2022 C++ ARM64/ARM64EC build tools  (component id: Microsoft.VisualStudio.Component.VC.Tools.ARM64)"
+    }
+    if (-not $haveClang) {
+        $missing += "  - C++ Clang Compiler for Windows  (component id: Microsoft.VisualStudio.Component.VC.Llvm.Clang)`n    Or install LLVM separately so that clang.exe is on PATH."
+    }
+
+    $list = ($missing -join "`n")
+    throw @"
+ARM64 build is missing required Visual Studio component(s):
+
+$list
+
+Open the Visual Studio Installer, click "Modify" on your VS 2022 / Build Tools
+install, and add the components above on the "Individual components" tab.
+"@
 }
 
 $CargoToml = Get-Content -Raw -Path (Join-Path $RepoRoot "Cargo.toml")
