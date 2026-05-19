@@ -222,6 +222,48 @@ impl ProcessHandle {
     }
 }
 
+/// Run `<core_exe> version` synchronously and return the captured
+/// stdout text. Used by the UI to populate the "Core: ..." chip in the
+/// log toolbar and the full multi-line version banner in a modal.
+///
+/// The command is short-lived (typically a few ms — Go startup
+/// dominates), so calling this from the UI thread on a cache miss is
+/// acceptable. We also need a window-less spawn on Windows so a black
+/// conhost never flashes when the launcher resolves the version.
+pub fn fetch_core_version(core_exe: &Path) -> Result<String> {
+    if !core_exe.exists() {
+        return Err(anyhow!("core not found: {}", core_exe.display()));
+    }
+
+    let mut cmd = Command::new(core_exe);
+    cmd.arg("version")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let output = cmd
+        .output()
+        .with_context(|| format!("failed to spawn: {}", core_exe.display()))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let code = match output.status.code() {
+            Some(c) => format!("exit code {c}"),
+            None => "terminated by signal".to_string(),
+        };
+        return Err(anyhow!("core version failed ({code}): {}", stderr.trim()));
+    }
+
+    // sing-box emits clean ASCII for `version` on stdout, but reuse the
+    // same ANSI stripper as the log pump in case future builds add color.
+    Ok(strip_ansi(&String::from_utf8_lossy(&output.stdout)))
+}
+
 /// Compose a one-line summary plus the most relevant stderr context.
 /// We grep the tail for the line(s) sing-box typically uses to report
 /// a fatal error (`FATAL`, `panic`, `error`); falling back to the last

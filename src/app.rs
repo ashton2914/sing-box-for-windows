@@ -171,6 +171,14 @@ pub struct App {
     /// About / license dialog open state.
     pub about_open: bool,
     pub about_modal_state: crate::theme::ModalState,
+    /// Cached output of `<core> version` for the selected core, keyed by
+    /// core name + on-disk mtime so the cache self-invalidates when the
+    /// user swaps cores or upgrades the kernel binary.
+    pub core_version: CoreVersionCache,
+    /// Open state for the modal that surfaces the full multi-line
+    /// `version` output (env, tags, revision).
+    pub core_version_open: bool,
+    pub core_version_modal_state: crate::theme::ModalState,
 
     pub bg_tx: Sender<BgCmd>,
     pub log_tx: Sender<LogEvent>,
@@ -251,6 +259,9 @@ impl App {
             destroy_confirm_open: false,
             about_open: false,
             about_modal_state: crate::theme::ModalState::default(),
+            core_version: CoreVersionCache::default(),
+            core_version_open: false,
+            core_version_modal_state: crate::theme::ModalState::default(),
             bg_tx,
             log_tx,
             bg_rx,
@@ -259,13 +270,10 @@ impl App {
             pending_initial_silent_hide,
         };
 
-        // Drop a stale selection if its folder is gone.
-        if let Some(sel) = app.settings.selected_config.clone() {
-            if !app.configs.iter().any(|c| c.slug == sel) {
-                app.settings.selected_config = None;
-                app.persist_settings();
-            }
-        }
+        // Drop a stale selection (config or core) if its file/folder is
+        // gone — reuses the same pruning logic that the Settings refresh
+        // button triggers so startup and runtime behaviour stay aligned.
+        app.prune_stale_selections();
 
         if app.settings.auto_start_sing_box {
             app.try_start();
@@ -291,7 +299,40 @@ impl App {
         let (configs, config_load_errors) = self.paths.list_configs_with_errors();
         self.configs = configs;
         self.cores = self.paths.list_cores();
+        // If the previously-selected config or core has disappeared
+        // from disk (deleted file/folder, renamed, etc.), drop the
+        // stale selection so the dropdowns no longer surface a name
+        // that resolves to nothing.
+        self.prune_stale_selections();
         summarize_config_load_errors(&config_load_errors)
+    }
+
+    /// Clear `selected_config` and/or `selected_core` when the underlying
+    /// entry is no longer present in the freshly-listed `configs` /
+    /// `cores` collections, then persist if anything changed. Shared by
+    /// `App::new` (startup self-heal) and `refresh_listings` (Settings
+    /// refresh button).
+    fn prune_stale_selections(&mut self) {
+        let mut changed = false;
+        if let Some(sel) = self.settings.selected_config.clone() {
+            if !self.configs.iter().any(|c| c.slug == sel) {
+                self.settings.selected_config = None;
+                changed = true;
+            }
+        }
+        if let Some(sel) = self.settings.selected_core.clone() {
+            if !self.cores.iter().any(|c| c == &sel) {
+                self.settings.selected_core = None;
+                // Invalidate the cached version info so the toolbar
+                // chip stops showing a version that no longer maps to
+                // an installed core.
+                self.core_version = CoreVersionCache::default();
+                changed = true;
+            }
+        }
+        if changed {
+            self.persist_settings();
+        }
     }
 
     /// Reconcile the on-disk Windows autostart entry and the Task
@@ -383,6 +424,61 @@ impl App {
         let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
         self.selected_config_cache
             .get_or_refresh(slug, &path, mtime)
+    }
+
+    /// Refresh `self.core_version` from `<core> version` if the cached
+    /// entry no longer matches the currently selected core (or its
+    /// on-disk mtime). Synchronous because the command is short-lived
+    /// and only runs on a cache miss, not every frame.
+    pub fn ensure_core_version(&mut self) {
+        // Rate-limit the metadata() probe so idle repaints don't fan
+        // out into one stat syscall per frame. A 1-second debounce is
+        // imperceptible for detecting kernel swaps while keeping the
+        // common cache-hit path effectively free.
+        let now = Instant::now();
+        if let Some(last) = self.core_version.last_check {
+            if now.duration_since(last) < Duration::from_secs(1) {
+                return;
+            }
+        }
+        self.core_version.last_check = Some(now);
+
+        let Some(name) = self.settings.selected_core.clone() else {
+            // No core selected — keep the cache cleared so the UI shows
+            // a neutral placeholder instead of stale version text.
+            if self.core_version.name.is_some() {
+                self.core_version = CoreVersionCache {
+                    last_check: Some(now),
+                    ..CoreVersionCache::default()
+                };
+            }
+            return;
+        };
+        let path = self.paths.core_path(&name);
+        let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        if self.core_version.name.as_deref() == Some(name.as_str())
+            && self.core_version.mtime == mtime
+        {
+            return;
+        }
+        let (full, short) = match crate::core::process::fetch_core_version(&path) {
+            Ok(text) => {
+                let short = extract_short_version(&text);
+                (Some(text), short)
+            }
+            // Cache the failed attempt (with cleared full/short) so we
+            // don't spawn the process every frame; the cache still
+            // refreshes when the user selects a different core or
+            // replaces the binary on disk.
+            Err(_) => (None, None),
+        };
+        self.core_version = CoreVersionCache {
+            name: Some(name),
+            mtime,
+            full,
+            short,
+            last_check: Some(now),
+        };
     }
 
     pub fn try_start(&mut self) {
@@ -720,6 +816,42 @@ fn build_override_inbound(settings: &InboundOverrideSettings) -> anyhow::Result<
             Ok(inbound)
         }
     }
+}
+
+#[derive(Default)]
+pub struct CoreVersionCache {
+    /// Name of the core executable whose version we cached. `None`
+    /// means we have never run the lookup successfully for any core.
+    name: Option<String>,
+    /// On-disk mtime captured at fetch time so an in-place kernel
+    /// upgrade invalidates the cache automatically.
+    mtime: Option<std::time::SystemTime>,
+    /// Full multi-line stdout from `<core> version`. `None` when the
+    /// lookup failed (the cache still records the attempt so we don't
+    /// re-spawn the process every frame).
+    pub full: Option<String>,
+    /// Short version token extracted from the first line of `full`
+    /// (e.g. `1.10.0`). `None` when extraction failed or the lookup
+    /// failed.
+    pub short: Option<String>,
+    /// Wall-clock time of the most recent `metadata()` probe. Used to
+    /// rate-limit the per-frame stat call so idle 60fps repaints do not
+    /// fan out into 60 syscalls/second on the core exe.
+    last_check: Option<Instant>,
+}
+
+/// Pull a compact version token out of the first line of `<core> version`
+/// output. sing-box prints `sing-box version 1.10.0` as the first line;
+/// we take the last whitespace-separated token and assume that is the
+/// version number. Falls back to the trimmed first line if no whitespace
+/// is present.
+fn extract_short_version(full: &str) -> Option<String> {
+    let first = full.lines().next()?.trim();
+    if first.is_empty() {
+        return None;
+    }
+    let token = first.split_whitespace().last().unwrap_or(first);
+    Some(token.to_string())
 }
 
 #[derive(Default)]

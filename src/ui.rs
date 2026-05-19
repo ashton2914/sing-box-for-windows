@@ -49,6 +49,7 @@ fn modal_window_open(app: &App) -> bool {
         || app.delete_confirm.is_some()
         || app.destroy_confirm_open
         || app.about_open
+        || app.core_version_open
 }
 
 fn settings_row(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
@@ -174,6 +175,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
     delete_confirm_modal(ui.ctx(), app);
     destroy_confirm_modal(ui.ctx(), app);
     about_modal(ui.ctx(), app);
+    core_version_modal(ui.ctx(), app);
 }
 
 // ---------- Config card ----------
@@ -1415,7 +1417,7 @@ fn run_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
         ui.add_space(14.0);
 
         const LOG_INNER_MARGIN: f32 = 10.0;
-        const LOG_HEIGHT: f32 = 400.0;
+        const LOG_HEIGHT: f32 = 200.0;
         const LOG_TOOLBAR_HEIGHT: f32 = 28.0;
         const LOG_DIVIDER_HEIGHT: f32 = 1.0;
         const LOG_BODY_HEIGHT: f32 = LOG_HEIGHT - LOG_TOOLBAR_HEIGHT - LOG_DIVIDER_HEIGHT;
@@ -1531,7 +1533,10 @@ fn run_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
 }
 
 fn log_status_toolbar(ui: &mut egui::Ui, app: &mut App) {
-    let now = chrono::Local::now().format("%H:%M:%S").to_string();
+    // Refresh the cached `<core> version` output if the user swapped
+    // cores or replaced the binary on disk. Cheap when the cache is
+    // valid; spawns the core process once otherwise.
+    app.ensure_core_version();
     let uptime = app
         .proc
         .running_for()
@@ -1557,82 +1562,198 @@ fn log_status_toolbar(ui: &mut egui::Ui, app: &mut App) {
     };
     let webui_url = cfg.and_then(extract_clash_webui_url);
 
-    let text = format!("Level {log_level}    Time {now}    Uptime {uptime}");
+    // ---- Core: <short version> ----
+    // Hidden-button styling: looks like plain status text until the
+    // user hovers, at which point a subtle background hints that
+    // clicking opens the full `<core> version` output in a modal.
+    let core_short = app
+        .core_version
+        .short
+        .clone()
+        .unwrap_or_else(|| "?".to_owned());
+    let core_has_full = app.core_version.full.is_some();
+    let core_label = format!("Core: {core_short}");
+    if log_inline_hidden_button(ui, &core_label).clicked() && core_has_full {
+        app.core_version_modal_state.reset();
+        app.core_version_open = true;
+    }
 
-    ui.add(
-        egui::Label::new(
-            egui::RichText::new(text)
-                .color(color::on_surface_variant())
-                .size(12.0)
-                .monospace(),
-        )
-        .selectable(false),
-    )
-    .on_hover_cursor(egui::CursorIcon::Default);
+    ui.add_space(8.0);
+
+    // Log: <level> + Uptime: <duration> as a single static label —
+    // these are read-only status text, not interactive. Time-of-day is
+    // intentionally absent here; the OS clock already covers that and
+    // it added noise. "Log:" rather than "Level" because the value is
+    // the log subsystem state (which includes the literal "disabled")
+    // and "Level" misleadingly implied a strict severity threshold.
+    //
+    // Rendered via `log_inline_text` (rather than `egui::Label`) so it
+    // shares the same baseline math as the hidden-button chips on either
+    // side. Otherwise strings without descenders ("WebUI", "Clear",
+    // "Pause") would visibly sit at a different height than this label.
+    let text = format!("Log: {log_level}    Uptime: {uptime}");
+    log_inline_text(ui, &text, color::on_surface_variant());
+
     if let Some(url) = webui_url.as_deref() {
-        ui.add_space(10.0);
-        if ui
-            .add(
-                egui::Label::new(
-                    egui::RichText::new("WebUI ready")
-                        .color(color::primary())
-                        .size(12.0)
-                        .monospace()
-                        .underline(),
-                )
-                .selectable(false)
-                .sense(egui::Sense::click()),
-            )
-            .on_hover_cursor(egui::CursorIcon::Default)
-            .on_hover_text(format!("Open WebUI: {url}"))
-            .clicked()
-        {
+        ui.add_space(8.0);
+        // WebUI affordance uses the same muted color as surrounding
+        // status text so it does not visually compete with the other
+        // chips — only the hover background reveals it is clickable.
+        if log_inline_hidden_button(ui, "WebUI").clicked() {
             if let Err(e) = shell::open_url(url) {
                 app.last_error = Some(format!("Open WebUI failed: {e}"));
             }
         }
     }
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        let visible_empty = app
-            .log_view_snapshot
-            .as_ref()
-            .map(|s| s.is_empty())
-            .unwrap_or(app.logs.is_empty());
-        if ui
-            .add_enabled(!visible_empty, log_toolbar_button("Clear"))
-            .on_hover_text("Clear displayed logs")
-            .clicked()
-        {
-            app.logs.clear();
-            app.log_view_snapshot = None;
-        }
 
+    // Right-aligned action chips: Pause/Resume and Clear share the same
+    // hidden-button chrome as the left-side chips but keep the primary
+    // accent color so the user can still pick them out as actions.
+    // Both are always visible (Clear is a no-op when the log is empty)
+    // so the toolbar layout never shifts when logs arrive or are cleared.
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         let paused = app.log_view_snapshot.is_some();
-        let (label, hover) = if paused {
-            ("Resume", "Resume log refresh")
-        } else {
-            ("Pause", "Pause log refresh to read details")
-        };
-        if ui
-            .add(log_toolbar_button(label))
-            .on_hover_text(hover)
-            .clicked()
-        {
+        let label = if paused { "Resume" } else { "Pause" };
+        if log_inline_hidden_button_colored(ui, label, color::primary()).clicked() {
             if paused {
                 app.log_view_snapshot = None;
             } else {
                 app.log_view_snapshot = Some(app.logs.iter().cloned().collect());
             }
         }
+        if log_inline_hidden_button_colored(ui, "Clear", color::primary()).clicked() {
+            app.logs.clear();
+            app.log_view_snapshot = None;
+        }
     });
 }
 
-fn log_toolbar_button(text: &'static str) -> egui::Button<'static> {
-    egui::Button::new(egui::RichText::new(text).color(color::primary()).size(12.0))
-        .fill(egui::Color32::TRANSPARENT)
-        .rounding(egui::Rounding::same(radius::FULL))
-        .min_size(egui::vec2(40.0, 22.0))
-        .stroke(egui::Stroke::NONE)
+/// Render a button that looks like the surrounding monospace status
+/// text until the pointer hovers over it. On hover/active, a subtle
+/// surface tint paints behind the label so the affordance becomes
+/// visible without crowding the toolbar with chrome.
+///
+/// Uses the muted `on_surface_variant` color to match other status
+/// text; use [`log_inline_hidden_button_colored`] when the label needs
+/// a different tint (e.g. primary for the WebUI link).
+fn log_inline_hidden_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    log_inline_hidden_button_colored(ui, text, color::on_surface_variant())
+}
+
+/// Paint a non-interactive monospace label using the exact same vertical
+/// positioning math as the hidden-button chips. This is what guarantees
+/// the plain status text ("Log: warn    Uptime: stopped") sits on the
+/// same baseline as the adjacent chips, even when the chips contain
+/// strings without descenders.
+fn log_inline_text(ui: &mut egui::Ui, text: &str, color: egui::Color32) -> egui::Response {
+    log_inline_paint(ui, text, color, false)
+}
+
+/// Variant of [`log_inline_hidden_button`] with an explicit label color
+/// so different chips can share the same hidden-chrome behaviour while
+/// using palette-appropriate text colors.
+///
+/// Painted by hand so that every chip's hover background hugs the
+/// font's typographic design row (cap-top to descender-bottom) rather
+/// than the per-string ink, and so every label — chip or not — sits on
+/// the same baseline.
+fn log_inline_hidden_button_colored(
+    ui: &mut egui::Ui,
+    text: &str,
+    label_color: egui::Color32,
+) -> egui::Response {
+    log_inline_paint(ui, text, label_color, true)
+}
+
+/// Horizontal/vertical padding around the typographic design row when
+/// painting a chip background. Vertical padding leaves a small breathing
+/// gap above the caps and below the descenders so the chip doesn't read
+/// as cramped, while still hugging the font's design row more tightly
+/// than `egui::Button` would.
+const LOG_INLINE_PAD: egui::Vec2 = egui::vec2(6.0, 4.0);
+
+/// Probe the active monospace font for its *typographic design row*
+/// extent — the y-range from cap-top to descender-bottom — by laying
+/// out a reference string that contains both an ascender ("A") and a
+/// descender ("g"). Returns `(design_height, cap_top_offset)` where the
+/// offset is measured from the galley's layout origin.
+///
+/// Using these reference metrics (rather than the actual string's
+/// `mesh_bounds`) is what keeps adjacent labels on the same baseline
+/// regardless of which glyphs they happen to contain. Per-string
+/// `mesh_bounds` would shift the cap-top up for strings like "WebUI"
+/// (no descender), breaking baseline alignment with the rest of the
+/// toolbar.
+fn log_font_design_metrics(ui: &egui::Ui, font_id: &egui::FontId) -> (f32, f32) {
+    let reference = ui.fonts(|f| {
+        f.layout_no_wrap("Ag".to_owned(), font_id.clone(), egui::Color32::WHITE)
+    });
+    (reference.mesh_bounds.height(), reference.mesh_bounds.min.y)
+}
+
+/// Internal renderer shared by [`log_inline_text`] and the hidden-button
+/// chips. Allocates a row-height slot, optionally paints a hover
+/// background, and draws the text so its cap-top sits at a font-derived
+/// position that is identical across every call — the property that
+/// gives the toolbar a single visual baseline.
+fn log_inline_paint(
+    ui: &mut egui::Ui,
+    text: &str,
+    color: egui::Color32,
+    interactive: bool,
+) -> egui::Response {
+    let font_id = egui::FontId::monospace(12.0);
+    let galley = ui.fonts(|f| f.layout_no_wrap(text.to_owned(), font_id.clone(), color));
+    let (design_height, cap_top_in_galley) = log_font_design_metrics(ui, &font_id);
+
+    // Chip frames the *design row* (consistent across all strings) plus
+    // symmetric padding, so every chip has the same height and the
+    // hover background lines up with neighbouring chips even when the
+    // string has no descender ink to fill the bottom of the row.
+    let chip_size = egui::vec2(
+        galley.size().x + LOG_INLINE_PAD.x * 2.0,
+        design_height + LOG_INLINE_PAD.y * 2.0,
+    );
+    let row_height = ui.available_height().max(chip_size.y);
+    let sense = if interactive {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (slot_rect, response) = ui.allocate_exact_size(
+        egui::vec2(chip_size.x, row_height),
+        sense,
+    );
+    let chip_rect = egui::Rect::from_center_size(slot_rect.center(), chip_size);
+
+    if interactive {
+        let bg = if response.is_pointer_button_down_on() {
+            theme::with_alpha(color::on_surface(), 0.16)
+        } else if response.hovered() {
+            theme::with_alpha(color::on_surface(), 0.10)
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        if bg.a() > 0 {
+            ui.painter()
+                .rect_filled(chip_rect, egui::Rounding::same(radius::SM), bg);
+        }
+    }
+
+    // Anchor the font's cap-top (not the galley's layout-box top) to a
+    // fixed offset inside the chip. The galley draws relative to its
+    // own layout origin, so we shift by `-cap_top_in_galley` to put the
+    // actual cap-tops at `chip_rect.top() + LOG_INLINE_PAD.y`. Every
+    // call — chip or plain text — uses the same target y, which is what
+    // produces the unified baseline.
+    let target_cap_top = chip_rect.top() + LOG_INLINE_PAD.y;
+    let text_pos = egui::pos2(
+        chip_rect.left() + LOG_INLINE_PAD.x,
+        target_cap_top - cap_top_in_galley,
+    );
+    ui.painter().galley(text_pos, galley, color);
+
+    response
 }
 
 fn extract_log_level_from_config(config: &serde_json::Value) -> Option<String> {
@@ -2312,5 +2433,100 @@ fn about_modal(ctx: &egui::Context, app: &mut App) {
         app.about_modal_state.reset();
     } else {
         app.about_modal_state = modal_state;
+    }
+}
+
+/// Modal that surfaces the full multi-line `<core> version` output —
+/// environment, build tags, revision — captured by
+/// `App::ensure_core_version`. The status toolbar shows just the
+/// short version string; this modal is the "click to see everything"
+/// affordance.
+fn core_version_modal(ctx: &egui::Context, app: &mut App) {
+    if !app.core_version_open {
+        return;
+    }
+
+    let full = app.core_version.full.clone().unwrap_or_else(|| {
+        "(no version info available — the core lookup has not completed yet)".to_owned()
+    });
+    let core_name = app
+        .settings
+        .selected_core
+        .clone()
+        .unwrap_or_else(|| "(no core selected)".to_owned());
+
+    // Size the dialog from the viewport every frame, mirroring
+    // `about_modal`. The body scrolls; the Close button stays pinned.
+    let screen = ctx.screen_rect();
+    let compact = screen.width() < 580.0 || screen.height() < 620.0;
+    let edge_gap = if compact { 8.0 } else { 16.0 };
+    let frame_pad = if compact { 8.0 } else { 16.0 };
+    let modal_w = (screen.width() - edge_gap * 2.0 - frame_pad * 2.0).max(0.0);
+    let chrome_h = 28.0  // title row
+        + theme::modal::HEADER_GAP
+        + 14.0           // body/footer gap
+        + 28.0           // Close button row
+        + frame_pad * 2.0;
+    let body_max_h = (screen.height() - edge_gap * 2.0 - chrome_h).max(48.0);
+
+    let mut modal_state = app.core_version_modal_state.clone();
+    let result = theme::modal_dialog_sized_with_state(
+        ctx,
+        "core_version_modal",
+        "Core Version",
+        modal_w,
+        body_max_h,
+        frame_pad,
+        true,
+        &mut modal_state,
+        |ui, body_max_h, close| {
+            egui::ScrollArea::vertical()
+                .id_source("core_version_body_scroll")
+                .auto_shrink([false, true])
+                .max_height(body_max_h)
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(core_name.as_str())
+                            .color(color::on_surface())
+                            .strong()
+                            .size(14.0),
+                    );
+                    ui.add_space(8.0);
+
+                    // Monospace block so columns in tag lists line up
+                    // exactly the way `sing-box version` prints them.
+                    egui::Frame::none()
+                        .fill(color::surface_container_lowest())
+                        .rounding(egui::Rounding::same(radius::MD))
+                        .inner_margin(egui::Margin::same(10.0))
+                        .show(ui, |ui| {
+                            let inner_width = ui.available_width().max(0.0);
+                            ui.set_min_width(inner_width);
+                            ui.set_max_width(inner_width);
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(full.as_str())
+                                        .color(color::on_surface_variant())
+                                        .monospace()
+                                        .size(12.0),
+                                )
+                                .wrap(),
+                            );
+                        });
+                });
+
+            ui.add_space(14.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.add(theme::tonal_button("Close")).clicked() {
+                    *close = true;
+                }
+            });
+        },
+    );
+    if result.close_requested {
+        app.core_version_open = false;
+        app.core_version_modal_state.reset();
+    } else {
+        app.core_version_modal_state = modal_state;
     }
 }
