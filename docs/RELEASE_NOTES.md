@@ -1,5 +1,23 @@
 # Release Notes
 
+## v0.1.7 - 2026-05-19
+
+### Added
+
+- Added a **Core** chip in the log toolbar showing the running kernel's short version. Clicking the chip opens a modal with the full `<core> version` output, useful for confirming the active sing-box build tags when filing issues.
+- Stale `selected_config` and `selected_core` settings are now cleared automatically when the underlying file or folder has been deleted, so the dropdowns no longer surface entries that resolve to nothing.
+
+### Changed
+
+- Redesigned the log toolbar so every label (Core, Log, Uptime, WebUI, Clear, Pause/Resume) shares a single typographic baseline. Interactive elements use a hidden-button chip style that only reveals chrome on hover, keeping the toolbar visually quiet until the pointer arrives.
+- Clear and Pause/Resume are now always visible. The toolbar layout no longer shifts as logs arrive or are cleared.
+- Reduced the default log panel height from 400 px to 200 px so the rest of the page has more vertical breathing room; the panel is still scrollable for older entries.
+
+### Notes
+
+- The Core chip caches `<core> version` output and refreshes only when the selected core changes or the binary on disk is replaced, with a 1-second debounce on the file-system probe so idle repaints stay free.
+- Internal refactor: the log-toolbar chip painters were folded into a single `LogInlineChips` renderer. No behavioral change.
+
 ## v0.1.6 - 2026-05-18
 
 ### Fixed

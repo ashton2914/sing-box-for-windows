@@ -1607,7 +1607,10 @@ fn log_status_toolbar(ui: &mut egui::Ui, app: &mut App) {
         // WebUI affordance uses the same muted color as surrounding
         // status text so it does not visually compete with the other
         // chips — only the hover background reveals it is clickable.
-        if chips.button(ui, "WebUI", color::on_surface_variant()).clicked() {
+        if chips
+            .button(ui, "WebUI", color::on_surface_variant())
+            .clicked()
+        {
             if let Err(e) = shell::open_url(url) {
                 app.last_error = Some(format!("Open WebUI failed: {e}"));
             }
@@ -1670,9 +1673,8 @@ struct LogInlineChips {
 impl LogInlineChips {
     fn new(ui: &egui::Ui) -> Self {
         let font_id = egui::FontId::monospace(12.0);
-        let reference = ui.fonts(|f| {
-            f.layout_no_wrap("Ag".to_owned(), font_id.clone(), egui::Color32::WHITE)
-        });
+        let reference =
+            ui.fonts(|f| f.layout_no_wrap("Ag".to_owned(), font_id.clone(), egui::Color32::WHITE));
         Self {
             font_id,
             design_height: reference.mesh_bounds.height(),
@@ -1709,8 +1711,7 @@ impl LogInlineChips {
         color: egui::Color32,
         interactive: bool,
     ) -> egui::Response {
-        let galley =
-            ui.fonts(|f| f.layout_no_wrap(text.to_owned(), self.font_id.clone(), color));
+        let galley = ui.fonts(|f| f.layout_no_wrap(text.to_owned(), self.font_id.clone(), color));
 
         // Chip frames the *design row* (consistent across all strings)
         // plus symmetric padding, so every chip has the same height and
@@ -2211,51 +2212,58 @@ fn destroy_confirm_modal(ctx: &egui::Context, app: &mut App) {
     } else {
         ("Destroy working directory", 360.0)
     };
-    let result = theme::modal_dialog(ctx, "destroy_confirm_modal", title, width, true, |ui, close| {
-        if running {
-            ui.label(
-                egui::RichText::new(
-                    "Sing-box is still running. Please stop it before \
+    let result = theme::modal_dialog(
+        ctx,
+        "destroy_confirm_modal",
+        title,
+        width,
+        true,
+        |ui, close| {
+            if running {
+                ui.label(
+                    egui::RichText::new(
+                        "Sing-box is still running. Please stop it before \
                      destroying the working directory.",
-                )
-                .color(color::on_surface()),
-            );
-            ui.add_space(14.0);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(theme::filled_button("OK")).clicked() {
-                    *close = true;
-                }
-            });
-        } else {
-            ui.label(
-                egui::RichText::new(
-                    "This will clear the current working directory. \
-                     This action cannot be undone.",
-                )
-                .color(color::on_surface()),
-            );
-            ui.add_space(14.0);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add(theme::destructive_filled_button("Destroy"))
-                    .clicked()
-                {
-                    match shell::purge_directory(&app.paths.working_dir) {
-                        Ok(()) => {
-                            app.last_info = Some("Working directory cleared".into());
-                            app.last_error = None;
-                        }
-                        Err(e) => app.last_error = Some(e.to_string()),
+                    )
+                    .color(color::on_surface()),
+                );
+                ui.add_space(14.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add(theme::filled_button("OK")).clicked() {
+                        *close = true;
                     }
-                    *close = true;
-                }
-                ui.add_space(8.0);
-                if ui.add(theme::text_button("Cancel")).clicked() {
-                    *close = true;
-                }
-            });
-        }
-    });
+                });
+            } else {
+                ui.label(
+                    egui::RichText::new(
+                        "This will clear the current working directory. \
+                     This action cannot be undone.",
+                    )
+                    .color(color::on_surface()),
+                );
+                ui.add_space(14.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(theme::destructive_filled_button("Destroy"))
+                        .clicked()
+                    {
+                        match shell::purge_directory(&app.paths.working_dir) {
+                            Ok(()) => {
+                                app.last_info = Some("Working directory cleared".into());
+                                app.last_error = None;
+                            }
+                            Err(e) => app.last_error = Some(e.to_string()),
+                        }
+                        *close = true;
+                    }
+                    ui.add_space(8.0);
+                    if ui.add(theme::text_button("Cancel")).clicked() {
+                        *close = true;
+                    }
+                });
+            }
+        },
+    );
     if result.close_requested {
         app.destroy_confirm_open = false;
     }
