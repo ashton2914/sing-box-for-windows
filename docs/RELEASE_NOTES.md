@@ -1,5 +1,21 @@
 # Release Notes
 
+## v0.1.10 - 2026-05-27
+
+### Fixed
+
+- Tray-state CPU finally goes to ~0%. Throttling `request_repaint_after` to 2 s (v0.1.9) still woke the winit event loop on every call — egui's repaint callback fires unconditionally regardless of whether the new deadline actually changes the schedule — so at sing-box's peak log rate (hundreds of lines/sec) the UI thread was still being woken hundreds of times per second. Each wake cost an event-loop iteration + an empty paint pass even with the v0.1.9 early return.
+  - The log-forwarder now **drops** log events entirely while the window is hidden to the tray. The UI thread genuinely sleeps. The natural `WM_PAINT` that Windows fires on `SW_SHOW` wakes the loop the moment the user restores the window, and live logging resumes from that point. (Persistent log records, if needed, still live in sing-box's own log file — the in-memory ring buffer is a UI live tail.)
+
+- Right-clicking the **minimized** taskbar entry and choosing Close now actually closes the window (i.e. hides to tray). Previously winit suppressed paint / `RedrawRequested` for iconic windows, so `App::update` never ran to process the queued `WM_CLOSE` until the user restored the window — which produced the "click flashes the window, then it disappears" symptom.
+  - Installed a `WM_CLOSE` subclass on the main eframe window in [src/core/win.rs](src/core/win.rs). The subclass runs in the OS UI thread regardless of winit's redraw scheduling, reads an `Arc<AtomicBool>` mirroring the live close-to-tray setting, and calls `ShowWindow(SW_HIDE)` directly. winit and the egui event loop never have to be alive for the close to take effect.
+  - Real exits (close-to-tray disabled, or no tray handle) chain through to the original wndproc unchanged.
+
+### Notes
+
+- The `Arc<AtomicUsize>` shared-HWND plumbing from v0.1.9 is kept — the log forwarder still uses a live `IsWindowVisible` query, just to gate the drop now instead of to choose between two throttle windows.
+- The `update()`-level early return from v0.1.9 stays in place as defense in depth, though with the wakes gone it should rarely fire while hidden.
+
 ## v0.1.9 - 2026-05-27
 
 ### Fixed

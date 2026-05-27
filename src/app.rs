@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::thread;
@@ -200,6 +200,16 @@ pub struct App {
     /// because the very thing that would have refreshed the cache
     /// (`update()`) stops being called when the window is hidden.
     main_hwnd_shared: Arc<AtomicUsize>,
+    /// Mirrors `settings.close_to_tray && tray.is_some()` for the
+    /// Win32 WM_CLOSE subclass installed on the main window. The
+    /// subclass runs in the OS UI thread even when `App::update`
+    /// cannot (e.g. while the window is iconic), so it must read the
+    /// effective setting from somewhere safe — a shared atomic.
+    close_to_tray_shared: Arc<AtomicBool>,
+    /// `true` once the WM_CLOSE subclass has been installed on the
+    /// main HWND. Installed exactly once during the first frame that
+    /// captures the HWND.
+    close_subclass_installed: bool,
     /// One-shot startup hide requested by `settings.silent_start`.
     pending_initial_silent_hide: bool,
 }
@@ -233,6 +243,7 @@ impl App {
         // calling `update()`, so anything that refreshes the cache from
         // `update()` gets stuck on its last value (always "visible").
         let main_hwnd_shared = Arc::new(AtomicUsize::new(0));
+        let close_to_tray_shared = Arc::new(AtomicBool::new(false));
 
         // Forward LogEvents into the unified UI event channel.
         //
@@ -242,13 +253,22 @@ impl App {
         // into a full layout pass — the dominant idle-CPU cost while
         // the window was hidden to the tray.
         //
-        // Strategy: use `request_repaint_after` with a debounce window.
-        // Multiple calls within the window collapse to a single
-        // scheduled repaint (egui keeps the earliest pending deadline),
-        // so a burst of N log lines costs ONE eventual `update()` that
-        // drains all of them out of the channel together. When the
-        // window is hidden, we stretch the window way out so the UI
-        // thread is barely woken at all.
+        // Strategy while the window is **visible**: use
+        // `request_repaint_after` with a small debounce window. Multiple
+        // calls within the window collapse to a single scheduled repaint
+        // (egui keeps the earliest pending deadline), so a burst of N
+        // log lines costs ONE eventual `update()` that drains all of
+        // them out of the channel together.
+        //
+        // Strategy while the window is **hidden to the tray**: drop the
+        // log event entirely — do not push to `bg_event_tx`, do not
+        // wake the UI thread. The previous "throttle to 2s" approach
+        // still woke winit on every call (egui's repaint callback fires
+        // unconditionally, even if the new deadline equals the existing
+        // one), and 1000 wakes/sec at peak log rate kept idle CPU at
+        // several percent even with the UI thread early-returning. The
+        // log events would have been invisible anyway; the live log
+        // ring resumes filling as soon as the user restores the window.
         {
             let bg_event_tx = bg_event_tx.clone();
             let ctx = ctx.clone();
@@ -258,27 +278,22 @@ impl App {
                 // for the live Logs card to feel real-time, slow enough
                 // to coalesce dozens of lines per paint.
                 const VISIBLE_REPAINT: Duration = Duration::from_millis(50);
-                // While hidden the user can't see anything, but we
-                // still need an occasional drain so the channel and
-                // the in-memory log ring buffer don't grow without
-                // bound. 2s keeps both at trivially bounded sizes
-                // while practically eliminating idle CPU.
-                const HIDDEN_REPAINT: Duration = Duration::from_secs(2);
                 while let Ok(ev) = log_rx.recv() {
-                    if bg_event_tx.send(BgEvent::Log(ev)).is_err() {
-                        break;
-                    }
                     // Live Win32 query, NOT a cached flag — see the
                     // `main_hwnd_shared` doc comment for why.
                     let visible = main_window_visible_live(
                         main_hwnd_shared.load(Ordering::Relaxed),
                     );
-                    let delay = if visible {
-                        VISIBLE_REPAINT
-                    } else {
-                        HIDDEN_REPAINT
-                    };
-                    ctx.request_repaint_after(delay);
+                    if !visible {
+                        // Drop. The UI thread stays asleep; the next
+                        // visibility change wakes it via the natural
+                        // WM_PAINT that Windows fires on SW_SHOW.
+                        continue;
+                    }
+                    if bg_event_tx.send(BgEvent::Log(ev)).is_err() {
+                        break;
+                    }
+                    ctx.request_repaint_after(VISIBLE_REPAINT);
                 }
             });
         }
@@ -322,6 +337,8 @@ impl App {
             tray: None,
             main_hwnd: None,
             main_hwnd_shared,
+            close_to_tray_shared,
+            close_subclass_installed: false,
             pending_initial_silent_hide,
         };
 
@@ -1071,6 +1088,33 @@ impl eframe::App for App {
                 }
             }
         }
+
+        // Install the WM_CLOSE subclass once we know the HWND. The
+        // subclass intercepts Close at the Win32 layer so it works
+        // even when the window is iconic (winit suppresses paint /
+        // RedrawRequested for iconic windows, which would otherwise
+        // leave WM_CLOSE queued until the user restored the window).
+        // See `crate::core::win::install_close_to_tray_subclass`.
+        #[cfg(windows)]
+        if !self.close_subclass_installed {
+            if let Some(hwnd) = self.main_hwnd {
+                crate::core::win::install_close_to_tray_subclass(
+                    hwnd,
+                    self.close_to_tray_shared.clone(),
+                );
+                self.close_subclass_installed = true;
+            }
+        }
+
+        // Keep the subclass's view of the setting fresh. Cheap atomic
+        // store; only the subclass thread reads it. We OR the live
+        // tray-handle status into the setting so that, if tray
+        // creation failed for any reason, Close behaves like a real
+        // exit instead of vanishing into nothing.
+        self.close_to_tray_shared.store(
+            self.settings.close_to_tray && self.tray.is_some(),
+            Ordering::Relaxed,
+        );
 
         self.apply_initial_silent_hide(ctx);
         self.drain_events();
