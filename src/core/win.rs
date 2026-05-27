@@ -69,8 +69,18 @@ pub fn wide(s: &str) -> Vec<u16> {
 // The subclass reads from an `Arc<AtomicBool>` shared with the UI
 // thread, which keeps the live value of the setting in sync without
 // re-installing anything when the user toggles it.
+//
+// A second shared flag, `SLEEPING`, is set to `true` immediately when
+// the subclass eats a `WM_CLOSE` and hides the window. The log
+// forwarder thread (in `src/app.rs`) polls that flag on every line so
+// it can stop forwarding to the UI the instant we drop into the tray —
+// without waiting for `App::update` to run (which it won't, because
+// the window is now hidden). See the App's `sleeping` field for the
+// full lifecycle (set by every hide path, cleared by `update()` on
+// the wake transition).
 
 static CLOSE_TO_TRAY: OnceLock<Arc<AtomicBool>> = OnceLock::new();
+static SLEEPING: OnceLock<Arc<AtomicBool>> = OnceLock::new();
 
 /// Original wndproc returned by `SetWindowLongPtrW`, stored as `isize`
 /// (the raw API return type) so it lives in an atomic. Zero means
@@ -80,15 +90,23 @@ static ORIGINAL_WNDPROC: AtomicIsize = AtomicIsize::new(0);
 /// Install the close-to-tray subclass on the given HWND. Safe to call
 /// multiple times — only the first call replaces the wndproc; subsequent
 /// calls are no-ops. The `close_to_tray` flag is consulted on every
-/// `WM_CLOSE` and reflects the live setting.
-pub fn install_close_to_tray_subclass(hwnd: usize, close_to_tray: Arc<AtomicBool>) {
+/// `WM_CLOSE` and reflects the live setting. The `sleeping` flag is
+/// flipped to `true` by the subclass whenever it eats a Close so the
+/// log forwarder (and any other thread consulting it) stops doing
+/// real-time work immediately.
+pub fn install_close_to_tray_subclass(
+    hwnd: usize,
+    close_to_tray: Arc<AtomicBool>,
+    sleeping: Arc<AtomicBool>,
+) {
     if hwnd == 0 {
         return;
     }
-    // First-call wins for the shared flag — subsequent calls keep
-    // pointing at the same `Arc<AtomicBool>` so mutations from the UI
+    // First-call wins for the shared flags — subsequent calls keep
+    // pointing at the same `Arc<AtomicBool>`s so mutations from the UI
     // thread are visible to the subclass.
     let _ = CLOSE_TO_TRAY.set(close_to_tray);
+    let _ = SLEEPING.set(sleeping);
 
     if ORIGINAL_WNDPROC.load(Ordering::Acquire) != 0 {
         return; // Already installed.
@@ -125,6 +143,16 @@ unsafe extern "system" fn subclass_wndproc(
         if let Some(flag) = CLOSE_TO_TRAY.get() {
             if flag.load(Ordering::Relaxed) {
                 ShowWindow(hwnd, SW_HIDE);
+                // Enter sleep mode immediately so the log forwarder
+                // thread stops forwarding lines (and the bg worker
+                // stops requesting repaints) right now. Without this,
+                // those threads would keep waking the UI thread until
+                // the next `App::update` ran — which, because the
+                // window is now hidden, may not happen at all until
+                // the user restores from the tray.
+                if let Some(sleeping) = SLEEPING.get() {
+                    sleeping.store(true, Ordering::Release);
+                }
                 return 0;
             }
         }

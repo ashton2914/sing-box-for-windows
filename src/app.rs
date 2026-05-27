@@ -212,6 +212,30 @@ pub struct App {
     close_subclass_installed: bool,
     /// One-shot startup hide requested by `settings.silent_start`.
     pending_initial_silent_hide: bool,
+    /// Aggressive "tray sleep mode" flag. Set to `true` by every path
+    /// that hides the window to the tray (X-button close, iconic
+    /// WM_CLOSE eaten by the subclass, initial silent hide). Cleared
+    /// by `update()` the next time the window is actually visible.
+    ///
+    /// While true:
+    ///   * the log forwarder thread drops every incoming log event
+    ///     instead of forwarding it to the UI — a one-instruction
+    ///     atomic load replaces a per-event `IsWindowVisible` syscall;
+    ///   * the background worker still runs scheduled config
+    ///     auto-updates, but suppresses its `ctx.request_repaint()`
+    ///     on completion (events queue and are drained on wake);
+    ///   * the Win32 subclass flips the flag itself when it eats an
+    ///     iconic WM_CLOSE, so the forwarder stops without waiting
+    ///     for `App::update` (which doesn't run for a hidden window).
+    ///
+    /// The previous design relied on a per-log-line `IsWindowVisible`
+    /// syscall + a viewport visibility check in `update()`. Under
+    /// load (or during the first few seconds after a restore) those
+    /// were enough to sustain several percent CPU — not because the
+    /// UI was painting, but because winit, eframe and the log
+    /// forwarder kept poking each other awake. The sleep flag cuts
+    /// every one of those poking paths at the source.
+    sleeping: Arc<AtomicBool>,
 }
 
 impl App {
@@ -244,6 +268,11 @@ impl App {
         // `update()` gets stuck on its last value (always "visible").
         let main_hwnd_shared = Arc::new(AtomicUsize::new(0));
         let close_to_tray_shared = Arc::new(AtomicBool::new(false));
+        // Tray sleep mode flag. Starts at the requested initial state:
+        // if `silent_start` is on we are effectively sleeping until the
+        // user first opens the window from the tray, so the forwarder
+        // and bg worker should never wake the UI thread before then.
+        let sleeping = Arc::new(AtomicBool::new(pending_initial_silent_hide));
 
         // Forward LogEvents into the unified UI event channel.
         //
@@ -260,34 +289,32 @@ impl App {
         // log lines costs ONE eventual `update()` that drains all of
         // them out of the channel together.
         //
-        // Strategy while the window is **hidden to the tray**: drop the
-        // log event entirely — do not push to `bg_event_tx`, do not
-        // wake the UI thread. The previous "throttle to 2s" approach
-        // still woke winit on every call (egui's repaint callback fires
-        // unconditionally, even if the new deadline equals the existing
-        // one), and 1000 wakes/sec at peak log rate kept idle CPU at
-        // several percent even with the UI thread early-returning. The
-        // log events would have been invisible anyway; the live log
-        // ring resumes filling as soon as the user restores the window.
+        // Strategy while the window is **sleeping** (hidden to the
+        // tray): drop the log event entirely — do not push to
+        // `bg_event_tx`, do not wake the UI thread. The previous design
+        // queried `IsWindowVisible` per event, which (a) is a syscall
+        // and (b) only flipped to false AFTER eframe finished
+        // reconciling the viewport, leaving a several-second window
+        // after Close where the forwarder happily kept waking the UI.
+        // The shared `sleeping` flag is set the instant we begin a
+        // hide (in `handle_close_request`, `apply_initial_silent_hide`,
+        // and the Win32 WM_CLOSE subclass) so the gap is zero.
         {
             let bg_event_tx = bg_event_tx.clone();
             let ctx = ctx.clone();
-            let main_hwnd_shared = main_hwnd_shared.clone();
+            let sleeping_for_fwd = sleeping.clone();
             thread::spawn(move || {
                 // 50ms ≈ 20 Hz refresh during log bursts — fast enough
                 // for the live Logs card to feel real-time, slow enough
                 // to coalesce dozens of lines per paint.
                 const VISIBLE_REPAINT: Duration = Duration::from_millis(50);
                 while let Ok(ev) = log_rx.recv() {
-                    // Live Win32 query, NOT a cached flag — see the
-                    // `main_hwnd_shared` doc comment for why.
-                    let visible = main_window_visible_live(
-                        main_hwnd_shared.load(Ordering::Relaxed),
-                    );
-                    if !visible {
+                    if sleeping_for_fwd.load(Ordering::Relaxed) {
                         // Drop. The UI thread stays asleep; the next
-                        // visibility change wakes it via the natural
-                        // WM_PAINT that Windows fires on SW_SHOW.
+                        // wake comes from the user restoring the
+                        // window via the tray, at which point
+                        // `update()` clears the flag and a natural
+                        // WM_PAINT drives the first frame.
                         continue;
                     }
                     if bg_event_tx.send(BgEvent::Log(ev)).is_err() {
@@ -305,8 +332,17 @@ impl App {
             let log_tx = log_tx.clone();
             let bg_event_tx = bg_event_tx.clone();
             let ctx = ctx.clone();
+            let sleeping_for_bg = sleeping.clone();
             thread::spawn(move || {
-                background_loop(paths, settings, bg_cmd_rx, log_tx, bg_event_tx, ctx);
+                background_loop(
+                    paths,
+                    settings,
+                    bg_cmd_rx,
+                    log_tx,
+                    bg_event_tx,
+                    ctx,
+                    sleeping_for_bg,
+                );
             });
         }
 
@@ -340,6 +376,7 @@ impl App {
             close_to_tray_shared,
             close_subclass_installed: false,
             pending_initial_silent_hide,
+            sleeping,
         };
 
         // Drop a stale selection (config or core) if its file/folder is
@@ -742,15 +779,51 @@ impl App {
     /// is healthy, cancel the close and hide the real Win32 window
     /// directly. The tray worker later shows that HWND directly too, so
     /// this no longer depends on hidden-window eframe updates.
+    ///
+    /// We MUST send `ViewportCommand::Visible(false)` after the raw
+    /// `tray.hide_main_window` call, even though the OS window is
+    /// already hidden by that point. Without it, eframe's internal
+    /// viewport-state cache stays at `visible = true`, so it continues
+    /// to honor every queued `request_repaint_after` deadline as if
+    /// the window were on screen — winit is woken, `update()` runs,
+    /// the early visibility-check returns, and the event loop spins
+    /// on a nominally-hidden window. Symptom: sustained CPU after
+    /// close-to-tray + a multi-second reconcile when the user reopens
+    /// from the tray. `apply_initial_silent_hide` below has always
+    /// sent both commands together for the same reason.
     fn handle_close_request(&mut self, ctx: &egui::Context) {
         let close_requested = ctx.input(|i| i.viewport().close_requested());
         if close_requested && self.settings.close_to_tray && self.tray.is_some() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            // EXPERIMENT (May 2026 round 7): also tell eframe the
+            // viewport is iconified. winit on Windows suppresses
+            // `RedrawRequested` for iconic viewports, which appears
+            // to be the only public-API way to stop eframe's
+            // post-update GL swap-buffers cycle from running on its
+            // own cadence. The flag `silent_start → 0% CPU` /
+            // `wake-then-close → 7% CPU` asymmetry suggests the GL
+            // context, once initialised by the first real paint, is
+            // never released by eframe — so anything we do to the
+            // viewport visibility alone does not stop the swap loop.
+            // Send Minimized BEFORE the raw SW_HIDE so eframe's
+            // queued reconcile runs against an already-hidden HWND
+            // (SW_MINIMIZE on a hidden window is a no-op visually,
+            // so there is no taskbar flash, but the internal
+            // eframe/winit state still flips to "iconic").
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
             if let (Some(tray), Some(hwnd)) = (self.tray.as_ref(), self.main_hwnd) {
                 tray.hide_main_window(hwnd);
-            } else {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             }
+            // Sync eframe's viewport state regardless of whether the
+            // raw tray hide ran. If `tray` was unexpectedly missing we
+            // still want eframe to perform the hide itself via this
+            // command.
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            // Drop into sleep mode immediately so the log forwarder
+            // and the bg worker stop nudging the UI thread before the
+            // next `update()` runs. `update()` clears this flag when
+            // it sees the window is visible again.
+            self.sleeping.store(true, Ordering::Release);
         }
     }
 
@@ -761,9 +834,26 @@ impl App {
         self.pending_initial_silent_hide = false;
 
         if let (Some(tray), Some(hwnd)) = (self.tray.as_ref(), self.main_hwnd) {
+            // Match the close-to-tray path (see `handle_close_request`):
+            // also iconify the viewport so eframe's swap-buffers loop
+            // goes dormant. For silent-start specifically this is also
+            // belt-and-suspenders — the user has reported that silent
+            // start alone already keeps CPU at ~0% because the GL
+            // context never initialises on a window that was created
+            // with `with_visible(false)` and never shown.
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
             tray.hide_main_window(hwnd);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            // Mirror the close-to-tray path: enter sleep mode the
+            // instant we hide so the forwarder doesn't churn during
+            // silent startup. Already constructed `true` for this
+            // case in `App::new`, but re-assert it here in case the
+            // flag was cleared elsewhere first.
+            self.sleeping.store(true, Ordering::Release);
         } else {
+            // No tray available — we are NOT going to hide. Make sure
+            // sleep mode is OFF so the forwarder runs normally.
+            self.sleeping.store(false, Ordering::Release);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         }
     }
@@ -1104,6 +1194,7 @@ impl eframe::App for App {
                 crate::core::win::install_close_to_tray_subclass(
                     hwnd,
                     self.close_to_tray_shared.clone(),
+                    self.sleeping.clone(),
                 );
                 self.close_subclass_installed = true;
             }
@@ -1119,24 +1210,69 @@ impl eframe::App for App {
             Ordering::Relaxed,
         );
 
+        // Wake transition: if we are currently flagged as sleeping but
+        // the Win32 window is visible again, the user just restored
+        // from the tray (tray-click → raw SW_SHOW + SW_RESTORE). Clear
+        // the flag so the forwarder resumes forwarding and the bg
+        // worker resumes wake-on-completion, then ask for one extra
+        // repaint to make sure the UI catches up with any state
+        // changes that happened while we were sleeping.
+        if self.sleeping.load(Ordering::Acquire) && self.main_window_visible() {
+            self.sleeping.store(false, Ordering::Release);
+            // Mirror the `Minimized(true)` we sent on hide so eframe's
+            // internal viewport state matches the now-visible HWND.
+            // Without this, eframe still thinks the viewport is iconic
+            // and may suppress the paint we are about to request.
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.request_repaint();
+        }
+
         self.apply_initial_silent_hide(ctx);
         self.drain_events();
         self.handle_close_request(ctx);
 
-        // Defense in depth: skip the entire UI layout when the window
-        // is hidden to the tray. `CentralPanel::show` + `ui::show` is
-        // ~99% of the per-frame cost; the preamble above (IME swallow,
-        // theme reconcile, drain_events, handle_close_request) is
-        // essentially free.
+        // Tray sleep mode: actively throttle this update() callback.
         //
-        // We need this even though the log forwarder already throttles
-        // hidden-state repaints to 2 s, because (a) winit on Windows
-        // still fires the occasional RedrawRequested for SW_HIDE'd
-        // windows from its own scheduling, and (b) ANY pending
-        // `request_repaint_after` lingering from before the hide will
-        // still fire its eventual paint pass. Skipping the layout
-        // keeps those wakes effectively free instead of costing a full
-        // ~10 ms layout each.
+        // Diagnostic background (May 2026): even after wiring the
+        // `sleeping` flag through every wake source we own (log
+        // forwarder, bg worker, every repaint call site), the
+        // launcher process still measured ~7% CPU while hidden to
+        // the tray on Win11. That means eframe/winit themselves are
+        // driving `update()` at ~60 Hz independent of anything we
+        // schedule — likely the viewport-command reconcile loop
+        // and/or glow's swap-buffers cycle self-driving once the
+        // viewport state was last mutated.
+        //
+        // We cannot tell eframe "stop calling me". What we CAN do is
+        // make every sleep-mode `update()` invocation cost ~zero CPU
+        // by yielding the rest of its time slice back to the kernel.
+        // `std::thread::sleep` does not count as CPU time, so 200 ms
+        // here caps sleep-mode work at ~5 fps regardless of what
+        // eframe wants to do. The cumulative cost goes from
+        // "60 Hz × ~1ms per call ≈ 6% CPU" to
+        // "5 Hz × ~50 µs per call ≈ 0.025% CPU".
+        //
+        // Why this doesn't break wake-from-tray:
+        //  * The tray worker runs on its own thread with its own
+        //    message pump, so the user's click is delivered to the
+        //    tray HWND immediately. The tray worker calls SW_SHOW
+        //    on the main HWND directly (no main-thread roundtrip).
+        //  * Windows applies WS_VISIBLE synchronously; the visible
+        //    bit flips before our `thread::sleep` even returns.
+        //  * On the next `update()` after the sleep, the wake-
+        //    transition check above sees `sleeping && visible` and
+        //    clears the flag, so this branch is skipped and we
+        //    render normally.
+        //  * Worst-case wake latency: 200 ms — below the perceptible
+        //    click-to-restore budget.
+        if self.sleeping.load(Ordering::Relaxed) {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            return;
+        }
+
+        // Defense in depth: skip the UI layout if the Win32 window
+        // is genuinely hidden but somehow not flagged as sleeping
+        // (e.g. third-party accessibility tool hid us).
         if !self.main_window_visible() {
             return;
         }
@@ -1172,8 +1308,21 @@ fn background_loop(
     log_tx: Sender<LogEvent>,
     event_tx: Sender<BgEvent>,
     ctx: egui::Context,
+    sleeping: Arc<AtomicBool>,
 ) {
     let mut last_auto_attempt: Option<(String, Instant)> = None;
+
+    // Helper: nudge the UI thread to repaint, but ONLY when we are
+    // not in tray sleep mode. Inside sleep mode the BgEvent we just
+    // pushed stays queued on `bg_rx` and is drained the next time
+    // `update()` runs (i.e. after the user wakes the window from
+    // the tray). The work itself — config edits, auto-update fetches
+    // — still completes; only the repaint is suppressed.
+    let wake = |ctx: &egui::Context| {
+        if !sleeping.load(Ordering::Relaxed) {
+            ctx.request_repaint();
+        }
+    };
 
     loop {
         let timeout = Duration::from_secs(30);
@@ -1181,22 +1330,22 @@ fn background_loop(
             Ok(BgCmd::AddConfig(spec)) => {
                 let res = updater::add_config(&paths, &spec, &log_tx).map_err(|e| e.to_string());
                 let _ = event_tx.send(BgEvent::AddDone(res));
-                ctx.request_repaint();
+                wake(&ctx);
             }
             Ok(BgCmd::EditConfig { slug, spec }) => {
                 let res = run_edit(&paths, &slug, &spec, &log_tx);
                 let _ = event_tx.send(BgEvent::EditDone(res));
-                ctx.request_repaint();
+                wake(&ctx);
             }
             Ok(BgCmd::UpdateConfig(slug)) => {
                 let res = run_update_one(&paths, &slug, &log_tx);
                 let _ = event_tx.send(BgEvent::UpdateDone(res));
-                ctx.request_repaint();
+                wake(&ctx);
             }
             Ok(BgCmd::DeleteConfig(slug)) => {
                 let res = run_delete(&paths, &slug, &log_tx);
                 let _ = event_tx.send(BgEvent::DeleteDone(res));
-                ctx.request_repaint();
+                wake(&ctx);
             }
             Ok(BgCmd::SaveSettings(new_settings)) => {
                 settings = new_settings;
@@ -1204,14 +1353,14 @@ fn background_loop(
                     .save(&paths.settings_file)
                     .map_err(|e| e.to_string());
                 let _ = event_tx.send(BgEvent::SettingsSaved(res));
-                ctx.request_repaint();
+                wake(&ctx);
             }
             #[cfg(windows)]
             Ok(BgCmd::OpenLoopback) => {
                 let res =
                     crate::core::loopback::open_or_download(&paths).map_err(|e| e.to_string());
                 let _ = event_tx.send(BgEvent::LoopbackDone(res));
-                ctx.request_repaint();
+                wake(&ctx);
             }
             Ok(BgCmd::Shutdown) => break,
             Err(RecvTimeoutError::Timeout) => {
@@ -1233,7 +1382,7 @@ fn background_loop(
                                     .map(|_| slug.clone())
                                     .map_err(|e| e.to_string());
                                 let _ = event_tx.send(BgEvent::UpdateDone(res));
-                                ctx.request_repaint();
+                                wake(&ctx);
                             }
                         }
                     }
