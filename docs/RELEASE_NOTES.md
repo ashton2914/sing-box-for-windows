@@ -1,5 +1,19 @@
 # Release Notes
 
+## v0.1.8 - 2026-05-27
+
+### Fixed
+
+- Reduced idle CPU usage of the launcher itself while the window is hidden to the tray. The two dominant wake sources have been gated on actual window visibility:
+  - The running-uptime label's 1 Hz self-refresh in the run card no longer schedules repaints when the window is hidden, so the UI thread is no longer woken once per second by an invisible widget.
+  - The log forwarder no longer requests an immediate repaint per incoming log line. Bursts are now coalesced through `request_repaint_after` with a ~50 ms debounce while the window is visible, and a 2 s debounce while hidden, so chatty sing-box info-level output stops translating one-to-one into full layout passes.
+
+### Notes
+
+- A live `IsWindowVisible` query is published into a cross-thread atomic at the top of every frame, so the tray-hide / restore transition flips the throttling immediately on the next paint.
+- The in-memory log ring buffer (`LOG_BACKLOG_CAP`) is unchanged; the slower hidden-window drain still empties the channel well within the buffer bound.
+- No user-visible behavior or settings changed.
+
 ## v0.1.7 - 2026-05-19
 
 ### Added

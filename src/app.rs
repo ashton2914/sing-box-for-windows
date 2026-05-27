@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::thread;
@@ -192,6 +193,12 @@ pub struct App {
     main_hwnd: Option<usize>,
     /// One-shot startup hide requested by `settings.silent_start`.
     pending_initial_silent_hide: bool,
+    /// Cross-thread "is the main window currently mapped" flag. The UI
+    /// thread publishes the live `IsWindowVisible` result here at the
+    /// top of every `update()`; the log-forwarder thread reads it to
+    /// pick a fast vs slow `request_repaint_after` deadline so chatty
+    /// sing-box logs don't burn CPU on an invisible UI.
+    window_visible: Arc<AtomicBool>,
 }
 
 impl App {
@@ -215,16 +222,48 @@ impl App {
         let (bg_event_tx, bg_rx) = channel::<BgEvent>();
         let (log_tx, log_rx) = channel::<LogEvent>();
 
+        let window_visible = Arc::new(AtomicBool::new(true));
+
         // Forward LogEvents into the unified UI event channel.
+        //
+        // sing-box is chatty even at info level (DNS, connection
+        // tracking, periodic stats). The old code called
+        // `ctx.request_repaint()` per line, which turned every log line
+        // into a full layout pass — the dominant idle-CPU cost while
+        // the window was hidden to the tray.
+        //
+        // Strategy: use `request_repaint_after` with a debounce window.
+        // Multiple calls within the window collapse to a single
+        // scheduled repaint (egui keeps the earliest pending deadline),
+        // so a burst of N log lines costs ONE eventual `update()` that
+        // drains all of them out of the channel together. When the
+        // window is hidden, we stretch the window way out so the UI
+        // thread is barely woken at all.
         {
             let bg_event_tx = bg_event_tx.clone();
             let ctx = ctx.clone();
+            let window_visible = window_visible.clone();
             thread::spawn(move || {
+                // 50ms ≈ 20 Hz refresh during log bursts — fast enough
+                // for the live Logs card to feel real-time, slow enough
+                // to coalesce dozens of lines per paint.
+                const VISIBLE_REPAINT: Duration = Duration::from_millis(50);
+                // While hidden the user can't see anything, but we
+                // still need an occasional drain so the channel and
+                // the in-memory log ring buffer don't grow without
+                // bound. 2s keeps both at trivially bounded sizes
+                // while practically eliminating idle CPU.
+                const HIDDEN_REPAINT: Duration = Duration::from_secs(2);
                 while let Ok(ev) = log_rx.recv() {
                     if bg_event_tx.send(BgEvent::Log(ev)).is_err() {
                         break;
                     }
-                    ctx.request_repaint();
+                    let delay = if window_visible.load(Ordering::Relaxed) {
+                        VISIBLE_REPAINT
+                    } else {
+                        HIDDEN_REPAINT
+                    };
+                    ctx.request_repaint_after(delay);
                 }
             });
         }
@@ -268,6 +307,7 @@ impl App {
             tray: None,
             main_hwnd: None,
             pending_initial_silent_hide,
+            window_visible,
         };
 
         // Drop a stale selection (config or core) if its file/folder is
@@ -695,6 +735,40 @@ impl App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         }
     }
+
+    /// Returns `true` while the real Win32 main window is mapped / not
+    /// hidden to the tray. Used as a gate before scheduling periodic
+    /// `request_repaint_after` ticks (e.g. the running-uptime refresh):
+    /// when the window is hidden, those ticks would still wake the UI
+    /// thread and force a full layout pass that nobody can see, which
+    /// is the dominant idle-CPU cost while sitting in the tray.
+    ///
+    /// Reads from `window_visible`, which `update()` refreshes from
+    /// `IsWindowVisible` once per frame. Cheaper than re-querying Win32
+    /// from every UI widget that wants to know, and consistent with the
+    /// value the log-forwarder thread sees.
+    pub fn main_window_visible(&self) -> bool {
+        self.window_visible.load(Ordering::Relaxed)
+    }
+
+    /// Live Win32 query — the source of truth that feeds the cached
+    /// `window_visible` atomic. Conservatively returns `true` before the
+    /// HWND is captured so we never suppress the first paint.
+    fn is_main_window_visible(&self) -> bool {
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+
+            match self.main_hwnd {
+                Some(hwnd) => unsafe { IsWindowVisible(hwnd as _) != 0 },
+                None => true,
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            true
+        }
+    }
 }
 
 fn summarize_startup_warnings(
@@ -980,6 +1054,14 @@ impl eframe::App for App {
                 tray.set_main_hwnd(hwnd);
             }
         }
+
+        // Refresh the cross-thread visibility flag every frame so the
+        // log forwarder picks the right repaint cadence. Done after
+        // the HWND has been captured (otherwise the Win32 query
+        // pessimistically falls back to "visible" and the flag would
+        // never go false the first time we hide).
+        self.window_visible
+            .store(self.is_main_window_visible(), Ordering::Relaxed);
 
         self.apply_initial_silent_hide(ctx);
         self.drain_events();

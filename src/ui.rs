@@ -1359,7 +1359,15 @@ fn elevation_pill(ui: &mut egui::Ui) {
 
 fn run_card(ui: &mut egui::Ui, app: &mut App, card_width: f32) {
     let running = app.proc.is_running();
-    if running {
+    // Keep the running-uptime label ticking once per second — but only
+    // while the window is actually on screen. When the user has hidden
+    // the app to the tray (silent_start or close_to_tray), winit still
+    // delivers `RedrawRequested` for every queued `request_repaint*`, so
+    // an unconditional 1s self-loop here burns a full layout pass per
+    // second on an invisible UI. Gating on `main_window_visible()`
+    // stops the loop dead while in the tray; reopening the window the
+    // next `update()` re-arms it.
+    if running && app.main_window_visible() {
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_secs(1));
     }
