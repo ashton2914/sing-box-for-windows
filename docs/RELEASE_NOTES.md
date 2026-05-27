@@ -1,5 +1,19 @@
 # Release Notes
 
+## v0.1.9 - 2026-05-27
+
+### Fixed
+
+- Fixed the v0.1.8 regression where the launcher still consumed several percent of CPU after the window was hidden to the tray, and where the first repaint after a tray-hide could briefly hang.
+  - The previous fix relied on a cached "is the window visible" flag refreshed from inside `update()`, but `update()` stops being called once the window is hidden — so the cache got stuck on "visible" and the log-forwarder kept asking the UI thread to wake at ~20 Hz.
+  - Replaced the cached flag with a live `IsWindowVisible` Win32 query against an `Arc<AtomicUsize>` HWND that the log forwarder reads each iteration. The forwarder now always reflects the current OS state instead of a snapshot from the last `update()` that ran.
+  - Added a defensive early return inside `update()` itself: when the window is hidden, the entire `CentralPanel` / UI layout pass is skipped. This makes any residual wake (from leftover scheduled repaints or from winit's own scheduling for `SW_HIDE`'d windows) effectively free instead of costing a full ~10 ms layout pass.
+
+### Notes
+
+- The 50 ms (visible) / 2 s (hidden) repaint throttle from v0.1.8 is preserved, but it now actually engages reliably when the window is hidden.
+- The earlier-known limitation that a right-click → Close on the **minimized** taskbar entry only fires once the window is restored is a separate Windows / winit behavior (paint requests are suppressed for iconic windows). It is unchanged by this fix.
+
 ## v0.1.8 - 2026-05-27
 
 ### Fixed
