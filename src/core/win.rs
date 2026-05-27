@@ -13,8 +13,8 @@ use std::sync::{Arc, OnceLock};
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallWindowProcW, DefWindowProcW, SetWindowLongPtrW, ShowWindow, GWLP_WNDPROC, SW_HIDE,
-    WM_CLOSE, WNDPROC,
+    CallWindowProcW, DefWindowProcW, IsIconic, SetWindowLongPtrW, ShowWindow, GWLP_WNDPROC,
+    SW_HIDE, WM_CLOSE, WNDPROC,
 };
 
 /// `CREATE_NO_WINDOW` process creation flag — prevents a black conhost
@@ -51,14 +51,22 @@ pub fn wide(s: &str) -> Vec<u16> {
 // `CloseRequested` event the Rust side can act on — the click feels dead.
 //
 // Fix: install a wndproc subclass on the main eframe window. The subclass
-// runs *before* winit's wndproc for every message. For `WM_CLOSE`, if
-// "close button hides to tray" is on, it calls `ShowWindow(SW_HIDE)`
-// directly and returns 0 (consumed) — no Rust-side event loop needed.
-// For every other message (and for `WM_CLOSE` when the setting is off,
-// i.e. the user wants a real exit) it chains to the original wndproc via
-// `CallWindowProcW`, so winit sees the world unchanged.
+// runs *before* winit's wndproc for every message. For `WM_CLOSE` on an
+// **iconic** window (and only then), if "close button hides to tray" is
+// on, it calls `ShowWindow(SW_HIDE)` directly and returns 0 (consumed) —
+// no Rust-side event loop needed.
 //
-// The subclass also reads from an `Arc<AtomicBool>` shared with the UI
+// For `WM_CLOSE` on a **visible / restored** window (e.g. user clicks
+// the X title-bar button) we deliberately fall through to winit. winit
+// then emits `WindowEvent::CloseRequested`, `App::update` runs, and
+// `handle_close_request` routes the close through eframe's viewport
+// command machinery (`CancelClose` + `tray.hide_main_window`). That is
+// important because eframe / winit cache their own "window is visible"
+// state; if we bypass them with a raw `SW_HIDE`, that cache stays
+// stuck at `true`, queued repaint deadlines keep firing, and on re-show
+// eframe spends several seconds reconciling its state against the OS.
+//
+// The subclass reads from an `Arc<AtomicBool>` shared with the UI
 // thread, which keeps the live value of the setting in sync without
 // re-installing anything when the user toggles it.
 
@@ -105,15 +113,17 @@ unsafe extern "system" fn subclass_wndproc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    if msg == WM_CLOSE {
+    // Only intercept WM_CLOSE on an iconic window — that is the case
+    // winit cannot service (it suppresses paint / RedrawRequested for
+    // iconic windows, so `App::update` never runs to call
+    // `handle_close_request`). For any other state we MUST chain to
+    // the original wndproc so winit fires `CloseRequested` and the
+    // Rust side hides the window via eframe's viewport commands; a
+    // raw `SW_HIDE` here would desync eframe's cached visibility flag
+    // and cause sustained CPU + a multi-second reconcile on re-show.
+    if msg == WM_CLOSE && IsIconic(hwnd) != 0 {
         if let Some(flag) = CLOSE_TO_TRAY.get() {
             if flag.load(Ordering::Relaxed) {
-                // Consume the close: hide the window. The tray worker
-                // already knows how to re-show it via Show / double-
-                // click. We deliberately do NOT chain to the original
-                // wndproc here — that would let winit see the close
-                // and either start tearing down or post duplicate
-                // events.
                 ShowWindow(hwnd, SW_HIDE);
                 return 0;
             }

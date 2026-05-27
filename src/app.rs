@@ -1090,10 +1090,13 @@ impl eframe::App for App {
         }
 
         // Install the WM_CLOSE subclass once we know the HWND. The
-        // subclass intercepts Close at the Win32 layer so it works
-        // even when the window is iconic (winit suppresses paint /
-        // RedrawRequested for iconic windows, which would otherwise
-        // leave WM_CLOSE queued until the user restored the window).
+        // subclass intercepts Close at the Win32 layer ONLY when the
+        // window is iconic (winit suppresses paint / RedrawRequested
+        // for iconic windows, which would otherwise leave WM_CLOSE
+        // queued until the user restored the window). For close
+        // events on a visible / restored window, the subclass falls
+        // through to winit so `handle_close_request` runs through
+        // eframe's normal viewport command flow.
         // See `crate::core::win::install_close_to_tray_subclass`.
         #[cfg(windows)]
         if !self.close_subclass_installed {

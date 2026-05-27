@@ -1,5 +1,13 @@
 # Release Notes
 
+## v0.1.11 - 2026-05-27
+
+### Fixed
+
+- Clicking the **X** title-bar button on a visible window no longer leaves the launcher pegged at high CPU while it sits in the tray, and no longer causes a 3–4 s CPU spike when the window is reopened. The v0.1.10 `WM_CLOSE` subclass was intercepting Close in *every* state, including the normal X-click on a foreground window. Calling `ShowWindow(SW_HIDE)` directly from inside the subclass bypassed eframe / winit's viewport-state cache, which then kept draining queued repaint deadlines as if the window were still visible — and spent several seconds reconciling state on re-show.
+  - The subclass now intercepts `WM_CLOSE` **only when the window is iconic** (`IsIconic(hwnd) != 0`), which is the one case winit physically cannot service (it suppresses paint / `RedrawRequested` for iconic windows so `App::update` never runs). All other closes — X button, Alt+F4 on a restored window, tray menu's Close — fall through to the original wndproc, winit fires `CloseRequested`, and the existing `handle_close_request` path runs through eframe's proper viewport command flow (`CancelClose` + `tray.hide_main_window`).
+  - Right-clicking the **minimized** taskbar entry and choosing Close still hides to tray as it did in v0.1.10 — that case continues to go through the subclass.
+
 ## v0.1.10 - 2026-05-27
 
 ### Fixed
