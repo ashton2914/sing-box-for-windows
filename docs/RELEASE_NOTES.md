@@ -1,5 +1,18 @@
 # Release Notes
 
+## v0.1.12 - 2026-05-27
+
+### Fixed
+
+- Idle CPU after **wake-from-tray → close-to-tray** now stays at ~0%, matching the silent-start case. v0.1.11 fixed the X-button-on-foreground regression but left a separate asymmetry: once the GL context had been initialized by the first real paint, sending `ViewportCommand::Visible(false)` did not stop eframe's glow swap-buffers loop, so the launcher kept burning ~7% CPU while sitting in the tray. The fix is to additionally send `ViewportCommand::Minimized(true)` on every hide path (close-to-tray, silent-start hide, and the iconic `WM_CLOSE` subclass) before the raw `ShowWindow(SW_HIDE)`. winit on Windows suppresses `RedrawRequested` for iconic viewports, which is the public-API way to make the swap-buffers cycle go dormant. The mirroring `Minimized(false)` is sent on the wake transition so eframe's internal viewport state stays consistent with the now-visible HWND.
+  - `SW_MINIMIZE` against an already-hidden HWND is a visual no-op (no taskbar flash) but still flips eframe / winit internal state to iconic.
+  - Verified on Windows 11: CPU stays at ~0% both for silent-start-only and for wake-then-close, where v0.1.11 measured ~7% in the latter scenario.
+
+### Changed
+
+- Log lines produced while the window is hidden in the tray are no longer dropped. They are kept in the in-memory ring buffer (capped at `LOG_BACKLOG_CAP=1000`) and the live Logs card shows them the moment the user restores the window. Only the per-line `request_repaint_after` is skipped while in the tray, which is enough now that the swap-buffers loop is dormant. Previously v0.1.10 dropped the events outright as part of the earlier CPU workaround.
+- Removed the 200 ms `thread::sleep` throttle inside `update()` that was added as a belt-and-suspenders CPU brake before the root cause was found. With `Minimized(true)` suppressing the swap loop, `update()` no longer fires at high frequency while in the tray, so the throttle is pure wake-from-tray latency and has been deleted.
+
 ## v0.1.11 - 2026-05-27
 
 ### Fixed
