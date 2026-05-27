@@ -290,15 +290,19 @@ impl App {
         // them out of the channel together.
         //
         // Strategy while the window is **sleeping** (hidden to the
-        // tray): drop the log event entirely — do not push to
-        // `bg_event_tx`, do not wake the UI thread. The previous design
-        // queried `IsWindowVisible` per event, which (a) is a syscall
-        // and (b) only flipped to false AFTER eframe finished
-        // reconciling the viewport, leaving a several-second window
-        // after Close where the forwarder happily kept waking the UI.
-        // The shared `sleeping` flag is set the instant we begin a
-        // hide (in `handle_close_request`, `apply_initial_silent_hide`,
-        // and the Win32 WM_CLOSE subclass) so the gap is zero.
+        // tray): still push the log line into `bg_event_tx` so it is
+        // preserved in the in-memory ring buffer, but skip the
+        // `request_repaint_after` — there is nothing to paint. When
+        // the user wakes the window via the tray, `update()` drains
+        // the channel on the next frame and the user sees every line
+        // that arrived while they were away.
+        //
+        // Earlier rounds of the CPU-in-tray investigation `continue`d
+        // here (dropping the line outright), but the root cause turned
+        // out to be eframe's GL swap-buffers loop, which is now fixed
+        // by sending `ViewportCommand::Minimized(true)` on every hide.
+        // With that in place, the `request_repaint_after` we skip here
+        // really is the only cost — the channel send itself is cheap.
         {
             let bg_event_tx = bg_event_tx.clone();
             let ctx = ctx.clone();
@@ -309,18 +313,12 @@ impl App {
                 // to coalesce dozens of lines per paint.
                 const VISIBLE_REPAINT: Duration = Duration::from_millis(50);
                 while let Ok(ev) = log_rx.recv() {
-                    if sleeping_for_fwd.load(Ordering::Relaxed) {
-                        // Drop. The UI thread stays asleep; the next
-                        // wake comes from the user restoring the
-                        // window via the tray, at which point
-                        // `update()` clears the flag and a natural
-                        // WM_PAINT drives the first frame.
-                        continue;
-                    }
                     if bg_event_tx.send(BgEvent::Log(ev)).is_err() {
                         break;
                     }
-                    ctx.request_repaint_after(VISIBLE_REPAINT);
+                    if !sleeping_for_fwd.load(Ordering::Relaxed) {
+                        ctx.request_repaint_after(VISIBLE_REPAINT);
+                    }
                 }
             });
         }
@@ -1231,42 +1229,21 @@ impl eframe::App for App {
         self.drain_events();
         self.handle_close_request(ctx);
 
-        // Tray sleep mode: actively throttle this update() callback.
+        // Tray sleep mode: skip the layout pass entirely while hidden.
         //
-        // Diagnostic background (May 2026): even after wiring the
-        // `sleeping` flag through every wake source we own (log
-        // forwarder, bg worker, every repaint call site), the
-        // launcher process still measured ~7% CPU while hidden to
-        // the tray on Win11. That means eframe/winit themselves are
-        // driving `update()` at ~60 Hz independent of anything we
-        // schedule — likely the viewport-command reconcile loop
-        // and/or glow's swap-buffers cycle self-driving once the
-        // viewport state was last mutated.
+        // The root fix for idle-CPU-in-tray is sending
+        // `ViewportCommand::Minimized(true)` on every hide path
+        // (see `handle_close_request` / `apply_initial_silent_hide`),
+        // which lets winit suppress `RedrawRequested` for the iconic
+        // viewport so eframe's swap-buffers loop goes dormant. With
+        // that in place, `update()` is no longer called at 60 Hz
+        // while in tray and an early `return` here is sufficient.
         //
-        // We cannot tell eframe "stop calling me". What we CAN do is
-        // make every sleep-mode `update()` invocation cost ~zero CPU
-        // by yielding the rest of its time slice back to the kernel.
-        // `std::thread::sleep` does not count as CPU time, so 200 ms
-        // here caps sleep-mode work at ~5 fps regardless of what
-        // eframe wants to do. The cumulative cost goes from
-        // "60 Hz × ~1ms per call ≈ 6% CPU" to
-        // "5 Hz × ~50 µs per call ≈ 0.025% CPU".
-        //
-        // Why this doesn't break wake-from-tray:
-        //  * The tray worker runs on its own thread with its own
-        //    message pump, so the user's click is delivered to the
-        //    tray HWND immediately. The tray worker calls SW_SHOW
-        //    on the main HWND directly (no main-thread roundtrip).
-        //  * Windows applies WS_VISIBLE synchronously; the visible
-        //    bit flips before our `thread::sleep` even returns.
-        //  * On the next `update()` after the sleep, the wake-
-        //    transition check above sees `sleeping && visible` and
-        //    clears the flag, so this branch is skipped and we
-        //    render normally.
-        //  * Worst-case wake latency: 200 ms — below the perceptible
-        //    click-to-restore budget.
+        // (An earlier version of this branch also called
+        // `thread::sleep(200ms)` as a CPU-throttle belt-and-suspenders,
+        // but that just added wake-from-tray latency once Minimized()
+        // was solving the actual problem. Removed.)
         if self.sleeping.load(Ordering::Relaxed) {
-            std::thread::sleep(std::time::Duration::from_millis(200));
             return;
         }
 
